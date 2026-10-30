@@ -1,0 +1,20 @@
+[package]
+name = "redbackup"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Fundamental crates conforme AGENTS.md e technical_specifications.md
+rusqlite = "0.31"
+notify = "6.1"
+fastcdc = "0.1"
+blake3 = "1.5"
+zstd = "0.13"
+aes-gcm = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tempfile = "3.10"
+
+[dev-dependencies]
+# Para testes futuros
