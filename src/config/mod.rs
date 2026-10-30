@@ -2,3 +2,6 @@
 //!
 //! Regra: chave de criptografia NÃO armazenada em `settings.json`.
 //! Usar arquivo separado (`--key-file`) com permissões `0o600`, ou derivação `Argon2`.
+
+pub mod settings;
+pub mod validation;

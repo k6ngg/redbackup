@@ -4,8 +4,7 @@
 //! Prioridade máxima: integridade dos dados (pipeline atômico, chunks temporários + rename atômico).
 
 fn main() {
-    // Fase 0: estrutura inicial. O daemon e CLI serão inicializados nas fases subsequentes.
-    println!("redbackup v0.1.0 — Fase 0: estrutura inicializada.");
+    println!("redbackup v0.1.0 — Fase 1: configuração e inicialização do repositório.");
 }
 
 #[cfg(test)]
