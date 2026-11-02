@@ -11,14 +11,23 @@ use std::os::unix::net::UnixStream;
 
 #[cfg(unix)]
 pub fn send_command(socket_path: &Path, request: &Request) -> Result<Response> {
+    send_command_with_timeout(socket_path, request, Duration::from_secs(3600))
+}
+
+#[cfg(unix)]
+pub fn send_command_with_timeout(
+    socket_path: &Path,
+    request: &Request,
+    timeout: Duration,
+) -> Result<Response> {
     let mut stream = UnixStream::connect(socket_path).with_context(|| {
         format!(
             "Não foi possível conectar ao daemon em {}",
             socket_path.display()
         )
     })?;
-    stream.set_read_timeout(Some(Duration::from_secs(3600)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout.min(Duration::from_secs(30))))?;
 
     let payload = serde_json::to_vec(request).context("Falha ao serializar comando IPC")?;
     stream

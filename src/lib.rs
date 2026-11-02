@@ -13,3 +13,5 @@ pub mod repository;
 pub mod restoration;
 pub mod retention;
 pub mod scrubbing;
+
+pub mod status;

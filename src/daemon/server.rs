@@ -1,7 +1,7 @@
 //! Servidor IPC nativo do daemon.
 //!
 //! Em Unix usa `UnixListener`; cada conexão transporta uma linha JSON. O
-//! servidor atende conexões sequencialmente e compartilha a mesma engine usada
+//! servidor atende conexões com concorrência limitada e compartilha a mesma engine usada
 //! pela CLI local (`backup`, `prune`, etc.), evitando duplicação de lógica.
 
 use crate::backup;
@@ -13,7 +13,7 @@ use crate::retention;
 use crate::scrubbing;
 use anyhow::{Context, Result};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 
 #[cfg(unix)]
@@ -49,24 +49,44 @@ pub fn serve(repo_root: &Path, key: &[u8; 32]) -> Result<()> {
     println!("Origem: {}", settings.source_path);
     println!("Use Ctrl+C para encerrar (ou envie o comando `shutdown`).");
 
-    let mut shutdown = false;
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => match handle_connection(stream, repo_root, &settings, key) {
-                Ok(stop) => {
-                    if stop {
-                        shutdown = true;
-                        break;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let shutdown = AtomicBool::new(false);
+    let active = AtomicUsize::new(0);
+    listener.set_nonblocking(true)?;
+    std::thread::scope(|scope| {
+        while !shutdown.load(Ordering::Acquire) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if active.load(Ordering::Acquire) >= 16 {
+                        drop(stream);
+                        continue;
                     }
+                    active.fetch_add(1, Ordering::AcqRel);
+                    let active = &active;
+                    let shutdown = &shutdown;
+                    let settings = &settings;
+                    scope.spawn(move || {
+                        match handle_connection(stream, repo_root, settings, key) {
+                            Ok(true) => shutdown.store(true, Ordering::Release),
+                            Ok(false) => {}
+                            Err(error) => eprintln!("ERRO IPC: {:#}", error),
+                        }
+                        active.fetch_sub(1, Ordering::AcqRel);
+                    });
                 }
-                Err(error) => eprintln!("ERRO no atendimento IPC: {}", error),
-            },
-            Err(error) => eprintln!("ERRO ao aceitar conexão IPC: {}", error),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(error) => {
+                    eprintln!("ERRO IPC: {}", error);
+                    break;
+                }
+            }
         }
-    }
+    });
 
     let _ = fs::remove_file(&path);
-    if shutdown {
+    if shutdown.load(Ordering::Acquire) {
         println!("Daemon encerrado.");
     }
     Ok(())
@@ -84,7 +104,9 @@ fn handle_connection(
     settings: &Settings,
     key: &[u8; 32],
 ) -> Result<bool> {
-    let mut reader = BufReader::new(stream.try_clone()?);
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let mut reader = BufReader::new(stream.try_clone()?).take(64 * 1024 + 1);
     let mut line = String::new();
     let read = reader.read_line(&mut line)?;
     if read == 0 {
@@ -109,12 +131,10 @@ fn handle_connection(
     let (response, shutdown) = match request.command.as_str() {
         "ping" => (Response::ok("pong"), false),
         "status" => (
-            Response::ok(format!(
-                "redbackup {} — repositório: {} — origem: {}",
-                env!("CARGO_PKG_VERSION"),
-                repo_root.display(),
-                settings.source_path
-            )),
+            match crate::status::repository_status(repo_root) {
+                Ok(data) => Response::ok("Status do repositório").with_data(data),
+                Err(error) => Response::error(format!("Status indisponível: {:#}", error)),
+            },
             false,
         ),
         "backup" => match backup::run_backup(repo_root, settings, key) {

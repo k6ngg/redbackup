@@ -764,3 +764,123 @@ pub fn validate_chunk_options(min: Option<u64>, max: Option<u64>) -> Result<()> 
 pub fn configured_repository(path: &Path) -> Result<PathBuf> {
     open_repository(path).context("Repositório inválido")
 }
+
+/// Consulta metadados sem exigir chave ou executar migrações.
+pub fn cmd_status(repo: Option<&str>, watch: bool) -> i32 {
+    loop {
+        let result = (|| -> Result<()> {
+            let root = resolve_repository(repo)?;
+            let data = crate::status::repository_status(&root)?;
+            let daemon = daemon_state(&root);
+            println!(
+                "Repositório: {}\nOrigem: {}\nDaemon: {}",
+                root.display(),
+                data["source"].as_str().unwrap_or("?"),
+                daemon
+            );
+            println!(
+                "Snapshots: {} concluídos; {} falhos; {} em andamento",
+                data["snapshots"]["completed"],
+                data["snapshots"]["failed"],
+                data["snapshots"]["in-progress"]
+            );
+            if data["last_completed"].is_null() {
+                println!("Último backup concluído: nenhum");
+            } else {
+                println!(
+                    "Último backup concluído: snapshot {} em {}",
+                    data["last_completed"]["id"],
+                    data["last_completed"]["timestamp"].as_str().unwrap_or("?")
+                );
+            }
+            println!(
+                "Chunks: {}; corrupção registrada: {} (use scrub para verificar)",
+                data["chunks"], data["corruption_recorded"]
+            );
+            let active = data["backup_active"].as_bool().unwrap_or(false);
+            println!(
+                "Backup: {}",
+                if active {
+                    "em execução"
+                } else if data["backup_interrupted"].as_bool().unwrap_or(false) {
+                    "interrompido; execute recover antes de continuar"
+                } else {
+                    "inativo"
+                }
+            );
+            if !data["backup"].is_null() {
+                let p: crate::status::BackupProgress =
+                    serde_json::from_value(data["backup"].clone())?;
+                let stage = match p.stage.as_str() {
+                    "discovering" => "descobrindo arquivos",
+                    "processing" => "processando arquivo",
+                    "registering" => "registrando metadados",
+                    "verifying" => "verificando referências",
+                    "completed" => "concluído",
+                    "failed" => "falhou",
+                    _ => "desconhecida",
+                };
+                println!(
+                    "Etapa: {}; PID: {}; snapshot: {}",
+                    stage, p.pid, p.report.snapshot_id
+                );
+                println!(
+                    "Início (Unix): {}; atualização (Unix): {}; duração: {:.1}s",
+                    p.started_at, p.updated_at, p.elapsed_seconds
+                );
+                println!(
+                    "Arquivos descobertos: {}; total: {}; concluídos: {}; falhas: {}",
+                    p.discovered_files,
+                    if p.totals_known {
+                        p.report.files_total.to_string()
+                    } else {
+                        "calculando".into()
+                    },
+                    p.report.files_completed,
+                    p.report.files_failed
+                );
+                println!(
+                    "Arquivo atual: {}; bytes no arquivo: {}",
+                    p.current_file.as_deref().unwrap_or("nenhum"),
+                    p.current_file_bytes
+                );
+                println!("Bytes processados: {}; bytes confirmados: {}; chunks novos: {}; reutilizados: {}", p.bytes_processed, p.report.bytes_total, p.chunks_new, p.chunks_reused);
+                if let Some(error) = p.error {
+                    println!("Erro: {}", error);
+                }
+                for error in p.report.errors {
+                    println!("Falha [{}]: {}", error.path, error.message);
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("Status indisponível: {:#}", error);
+            return 1;
+        }
+        if !watch {
+            return 0;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+fn daemon_state(root: &Path) -> &'static str {
+    #[cfg(unix)]
+    {
+        match client::send_command_with_timeout(
+            &socket_path(root),
+            &Request::new("ping"),
+            std::time::Duration::from_secs(1),
+        ) {
+            Ok(response) if response.is_ok() => "ativo",
+            _ if socket_path(root).exists() => "indisponível (socket presente)",
+            _ => "inativo",
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        "não suportado nesta plataforma"
+    }
+}

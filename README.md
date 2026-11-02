@@ -220,7 +220,7 @@ Inicia o servidor IPC em `<repositório>/metadata/redbackup.sock` (Unix socket c
 {"command":"shutdown"}
 ```
 
-O atendimento é sequencial: um backup em execução bloqueia novas conexões até terminar. `shutdown` encerra o daemon de forma controlada e remove o socket. Em plataformas sem Unix socket, o daemon não está disponível e a CLI deve ser usada localmente.
+O atendimento permite até 16 conexões simultâneas: consultas podem ser atendidas durante um backup. `shutdown` encerra o daemon de forma controlada e remove o socket. Em plataformas sem Unix socket, o daemon não está disponível e a CLI deve ser usada localmente.
 
 #### `watch`
 
@@ -358,3 +358,43 @@ Os testes incluem integração ponta a ponta com backup, deduplicação, restaur
 - **Migrações**: schema versionado em `schema_version`; a v2 adiciona o diagnóstico de corrupção.
 - **VSS (Windows)**: previsto, não implementado nesta versão.
 - **GUI**: opcional; não implementada.
+
+### Consultar o status do repositório
+
+```bash
+redbackup status --repo /home/usuario/backups/redbackup
+redbackup status --repo /home/usuario/backups/redbackup --watch
+```
+
+A consulta não exige chave: mostra origem, snapshots por estado, último backup
+concluído, chunks e corrupção já registrada. `--watch` repete a consulta a cada
+2 segundos; use Ctrl+C para sair. Não executa migrações nem substitui `scrub`.
+
+O daemon é consultado por `ping`, com timeout de leitura/escrita de 1 segundo.
+Um socket antigo é mostrado como indisponível, sem afirmar que o serviço está ativo.
+O daemon atende até 16 conexões simultâneas e aguarda os atendimentos terminarem
+ao receber `shutdown`. Os locks continuam impedindo escritas simultâneas.
+
+O backup publica progresso tanto em execução local quanto pelo daemon:
+
+- `stage`: `discovering`, `processing`, `registering`, `verifying`, `completed` ou `failed`.
+- `started_at` e `updated_at`: segundos Unix; `elapsed_seconds`: duração.
+- `current_file` e `current_file_bytes`: arquivo atual e bytes processados nele.
+- `bytes_processed`, `chunks_new` e `chunks_reused`: trabalho realizado, incluindo
+  arquivos que eventualmente falhem; `report` contém os resultados confirmados.
+- `discovered_files` e `totals_known`: descoberta de arquivos; o total só fica
+  disponível depois da varredura. Não há estimativa de tempo restante.
+
+O progresso é atualizado entre chunks, com publicação periódica limitada a uma
+vez a cada 250 ms, além das mudanças de arquivo e etapas principais. Uma operação
+de I/O demorada pode atrasar atualizações. Os registros ficam em
+`metadata/backup-progress.json`; um lock próprio em `backup-activity.lock`
+confirma atividade sem depender da validade do PID. Se o lock foi liberado e o
+registro não tem estado final, o status indica interrupção e sugere `recover`.
+O status não repara nem remove registros. Erros ao publicar telemetria são
+reportados como avisos e não alteram o resultado do backup.
+
+O comando IPC `status` retorna o mesmo resumo em `data`, incluindo
+`backup_active`, `backup_interrupted` e `backup`. Não requer a chave do cliente.
+O progresso detalhado refere-se ao backup; outras operações preservam os locks
+existentes, mas não publicam os mesmos contadores.

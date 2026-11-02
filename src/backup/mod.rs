@@ -28,7 +28,7 @@ pub struct FileError {
 }
 
 /// Resultado de um backup.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BackupReport {
     pub snapshot_id: i64,
     pub files_total: usize,
@@ -68,72 +68,91 @@ pub fn run_backup(repo_root: &Path, settings: &Settings, key: &[u8; 32]) -> Resu
     // Exclusivo: dois backups não devem competir pelas mesmas referências nem
     // pela publicação de chunks.
     let _lock = RepositoryLock::exclusive(&root)?;
-    let source = Path::new(&settings.source_path)
-        .canonicalize()
-        .with_context(|| format!("Origem não encontrada: {}", settings.source_path))?;
-    if !source.is_dir() {
-        anyhow::bail!("A origem não é um diretório: {}", source.display());
-    }
-    // A origem nunca pode estar dentro do repositório (nem ser a própria raiz):
-    // o walker exclui o repositório para não salvar os próprios chunks. Sem
-    // esta checagem, o resultado seria um snapshot vazio marcado como
-    // concluído.
-    if source.starts_with(&root) {
-        anyhow::bail!(
-            "A origem não pode ser a raiz do repositório nem estar dentro dele: {}",
-            source.display()
+    let mut progress = crate::status::ProgressWriter::new(&root)?;
+    let result = (|| {
+        let source = Path::new(&settings.source_path)
+            .canonicalize()
+            .with_context(|| format!("Origem não encontrada: {}", settings.source_path))?;
+        if !source.is_dir() {
+            anyhow::bail!("A origem não é um diretório: {}", source.display());
+        }
+        // A origem nunca pode estar dentro do repositório (nem ser a própria raiz):
+        // o walker exclui o repositório para não salvar os próprios chunks. Sem
+        // esta checagem, o resultado seria um snapshot vazio marcado como
+        // concluído.
+        if source.starts_with(&root) {
+            anyhow::bail!(
+                "A origem não pode ser a raiz do repositório nem estar dentro dele: {}",
+                source.display()
+            );
+        }
+
+        set_directory_permissions(&metadata_dir(&root), 0o700)?;
+        let db_path = index_db_path(&root);
+        let mut conn = connect_or_create(
+            db_path
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Caminho do banco não é UTF-8"))?,
+        )?;
+
+        let snapshot_id = create_snapshot(&conn, &source.to_string_lossy())?;
+        progress.value.report.snapshot_id = snapshot_id;
+        let result = backup_files(
+            &mut conn,
+            &root,
+            &source,
+            settings,
+            key,
+            snapshot_id,
+            &mut progress,
         );
-    }
 
-    set_directory_permissions(&metadata_dir(&root), 0o700)?;
-    let db_path = index_db_path(&root);
-    let mut conn = connect_or_create(
-        db_path
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("Caminho do banco não é UTF-8"))?,
-    )?;
+        match result {
+            Ok(mut report) => {
+                // A integridade é verificada depois que todos os arquivos foram
+                // registrados; só então o snapshot pode ser publicado.
+                progress.value.stage = "verifying".into();
+                progress.value.report = report.clone();
+                progress.publish(true);
+                let problems = verify_snapshot_integrity(&conn, snapshot_id, &root)?;
+                for problem in problems {
+                    report.errors.push(FileError {
+                        path: "<snapshot>".to_string(),
+                        message: problem,
+                    });
+                }
+                report.files_failed = report
+                    .errors
+                    .iter()
+                    .filter(|e| e.path != "<snapshot>")
+                    .count();
+                let status = if report.errors.is_empty() {
+                    "completed"
+                } else {
+                    "failed"
+                };
+                finish_snapshot(&conn, snapshot_id, status)?;
+                report.status = status.to_string();
+                report.snapshot_id = snapshot_id;
 
-    let snapshot_id = create_snapshot(&conn, &source.to_string_lossy())?;
-    let result = backup_files(&mut conn, &root, &source, settings, key, snapshot_id);
-
-    match result {
-        Ok(mut report) => {
-            // A integridade é verificada depois que todos os arquivos foram
-            // registrados; só então o snapshot pode ser publicado.
-            let problems = verify_snapshot_integrity(&conn, snapshot_id, &root)?;
-            for problem in problems {
-                report.errors.push(FileError {
-                    path: "<snapshot>".to_string(),
-                    message: problem,
-                });
+                Ok(report)
             }
-            report.files_failed = report
-                .errors
-                .iter()
-                .filter(|e| e.path != "<snapshot>")
-                .count();
-            let status = if report.errors.is_empty() {
-                "completed"
-            } else {
-                "failed"
-            };
-            finish_snapshot(&conn, snapshot_id, status)?;
-            report.status = status.to_string();
-            report.snapshot_id = snapshot_id;
-            Ok(report)
-        }
-        Err(error) => {
-            if let Err(finish_error) = finish_snapshot(&conn, snapshot_id, "failed") {
-                eprintln!(
-                    "ERRO: não foi possível marcar o snapshot {} como falho: {}",
-                    snapshot_id, finish_error
-                );
+            Err(error) => {
+                if let Err(finish_error) = finish_snapshot(&conn, snapshot_id, "failed") {
+                    eprintln!(
+                        "ERRO: não foi possível marcar o snapshot {} como falho: {}",
+                        snapshot_id, finish_error
+                    );
+                }
+                Err(error)
             }
-            Err(error)
         }
-    }
+    })();
+    progress.finish(&result);
+    result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn backup_files(
     conn: &mut rusqlite::Connection,
     repo_root: &Path,
@@ -141,31 +160,46 @@ fn backup_files(
     settings: &Settings,
     key: &[u8; 32],
     snapshot_id: i64,
+    progress: &mut crate::status::ProgressWriter,
 ) -> Result<BackupReport> {
     let mut report = BackupReport {
         snapshot_id,
         ..BackupReport::default()
     };
-    let walk = walk_source(source, repo_root)?;
+    let walk = walk_source(source, repo_root, progress)?;
     report.files_total = walk.files.len() + walk.errors.len();
     report.errors.extend(walk.errors);
 
-    for (index, path) in walk.files.iter().enumerate() {
-        match process_file(conn, repo_root, source, path, settings, key, index as u64) {
-            Ok(processed) => match register_file(conn, snapshot_id, &processed) {
-                Ok(()) => {
-                    report.files_completed += 1;
-                    report.bytes_total += processed.bytes;
-                    report.chunks_new += processed.chunks_new;
-                    report.chunks_reused += processed.chunks_reused;
+    progress.value.report = report.clone();
+    progress.value.totals_known = true;
+    progress.value.stage = "processing".into();
+    progress.publish(true);
+    for path in &walk.files {
+        report.files_failed = report.errors.len();
+        progress.value.stage = "processing".into();
+        progress.value.report = report.clone();
+        progress.value.current_file = Some(path.display().to_string());
+        progress.value.current_file_bytes = 0;
+        progress.publish(true);
+        match process_file(conn, repo_root, source, path, settings, key, progress) {
+            Ok(processed) => {
+                progress.value.stage = "registering".into();
+                progress.publish(false);
+                match register_file(conn, snapshot_id, &processed) {
+                    Ok(()) => {
+                        report.files_completed += 1;
+                        report.bytes_total += processed.bytes;
+                        report.chunks_new += processed.chunks_new;
+                        report.chunks_reused += processed.chunks_reused;
+                    }
+                    Err(error) => {
+                        report.errors.push(FileError {
+                            path: processed.relative_path,
+                            message: format!("falha ao registrar metadados: {}", error),
+                        });
+                    }
                 }
-                Err(error) => {
-                    report.errors.push(FileError {
-                        path: processed.relative_path,
-                        message: format!("falha ao registrar metadados: {}", error),
-                    });
-                }
-            },
+            }
             Err(error) => {
                 let relative = relative_path_for_metadata(source, path)
                     .unwrap_or_else(|_| path.display().to_string());
@@ -177,6 +211,10 @@ fn backup_files(
         }
     }
 
+    report.files_failed = report.errors.len();
+    progress.value.report = report.clone();
+    progress.value.current_file = None;
+    progress.publish(true);
     Ok(report)
 }
 
@@ -213,6 +251,7 @@ fn register_file(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_file(
     conn: &rusqlite::Connection,
     repo_root: &Path,
@@ -220,7 +259,7 @@ fn process_file(
     path: &Path,
     settings: &Settings,
     key: &[u8; 32],
-    _index: u64,
+    progress: &mut crate::status::ProgressWriter,
 ) -> Result<ProcessedFile> {
     let relative_path = relative_path_for_metadata(source, path)?;
     let file = File::open(path)
@@ -269,6 +308,14 @@ fn process_file(
 
         bytes += chunk.len() as u64;
         chunks.push((hash_id, chunk.len() as u64, compressed_size));
+        progress.value.current_file_bytes = bytes;
+        progress.value.bytes_processed += chunk.len() as u64;
+        if already_stored {
+            progress.value.chunks_reused += 1;
+        } else {
+            progress.value.chunks_new += 1;
+        }
+        progress.publish(false);
     }
 
     let after = fs::metadata(path)
@@ -318,7 +365,11 @@ fn system_time_to_unix(time: std::time::SystemTime) -> Option<i64> {
         .map(|duration| duration.as_secs() as i64)
 }
 
-fn walk_source(source: &Path, repo_root: &Path) -> Result<WalkResult> {
+fn walk_source(
+    source: &Path,
+    repo_root: &Path,
+    progress: &mut crate::status::ProgressWriter,
+) -> Result<WalkResult> {
     let repo_root = repo_root
         .canonicalize()
         .unwrap_or_else(|_| repo_root.to_path_buf());
@@ -326,12 +377,17 @@ fn walk_source(source: &Path, repo_root: &Path) -> Result<WalkResult> {
         files: Vec::new(),
         errors: Vec::new(),
     };
-    walk_dir(source, &repo_root, &mut result)?;
+    walk_dir(source, &repo_root, &mut result, progress)?;
     result.files.sort();
     Ok(result)
 }
 
-fn walk_dir(dir: &Path, repo_root: &Path, result: &mut WalkResult) -> Result<()> {
+fn walk_dir(
+    dir: &Path,
+    repo_root: &Path,
+    result: &mut WalkResult,
+    progress: &mut crate::status::ProgressWriter,
+) -> Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) => {
@@ -375,7 +431,7 @@ fn walk_dir(dir: &Path, repo_root: &Path, result: &mut WalkResult) -> Result<()>
             continue;
         }
         if file_type.is_dir() {
-            walk_dir(&path, repo_root, result)?;
+            walk_dir(&path, repo_root, result, progress)?;
         } else if file_type.is_file() {
             if path.to_str().is_none() {
                 result.errors.push(FileError {
@@ -385,6 +441,8 @@ fn walk_dir(dir: &Path, repo_root: &Path, result: &mut WalkResult) -> Result<()>
                 continue;
             }
             result.files.push(path);
+            progress.value.discovered_files = result.files.len();
+            progress.publish(false);
         }
     }
     Ok(())

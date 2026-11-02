@@ -74,6 +74,15 @@ pub fn run(args: Vec<String>) -> i32 {
             }
             Err(error) => usage_error(&error),
         },
+        "status" => match parse_options(&args[2..]) {
+            Ok(parsed) => {
+                if let Err(error) = parsed.only(&["repo", "watch"]) {
+                    return usage_error(&error);
+                }
+                cmd_status(parsed.value("repo"), parsed.flag("watch"))
+            }
+            Err(error) => usage_error(&error),
+        },
         "backup" => match parse_options(&args[2..]) {
             Ok(parsed) => {
                 if let Err(error) = parsed.only(&["repo", "key-file", "manual", "no-daemon"]) {
@@ -224,6 +233,7 @@ fn print_help() {
     println!("Uso:");
     println!("  redbackup init --source <origem> --dest <repositório> --key-file <chave>");
     println!("      [--retention-days N] [--min-chunk N] [--max-chunk N]");
+    println!("  redbackup status [--repo <repositório>] [--watch]");
     println!("  redbackup keygen --path <arquivo>");
     println!(
         "  redbackup backup [--repo <repositório>] [--key-file <chave>] [--manual] [--no-daemon]"
@@ -311,7 +321,7 @@ impl Parsed {
 }
 
 fn parse_options(args: &[String]) -> Result<Parsed, String> {
-    const FLAGS: &[&str] = &["force", "manual", "no-daemon", "help"];
+    const FLAGS: &[&str] = &["force", "manual", "no-daemon", "help", "watch"];
     let mut parsed = Parsed {
         values: HashMap::new(),
         flags: HashSet::new(),
