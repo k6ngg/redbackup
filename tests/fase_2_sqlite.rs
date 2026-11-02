@@ -1,7 +1,9 @@
 //! Testes da Fase 2 — Schema SQLite e Metadados.
 
 use redbackup::metadata::migrations::run_migrations;
-use redbackup::metadata::repository::{connect_or_create, upsert_chunk, get_chunk, decrement_reference_count};
+use redbackup::metadata::repository::{
+    connect_or_create, decrement_reference_count, get_chunk, upsert_chunk,
+};
 
 #[test]
 fn aplicacao_de_migracao_cria_tabelas() {

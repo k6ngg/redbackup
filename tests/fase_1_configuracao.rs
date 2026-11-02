@@ -1,7 +1,7 @@
 //! Testes da Fase 1 — Configuração e inicialização segura.
 
-use std::fs;
 use redbackup::repository::initialize_repository;
+use std::fs;
 
 #[test]
 fn inicializacao_cria_estrutura() {
@@ -23,5 +23,8 @@ fn inicializacao_detecta_inconsistencia() {
     fs::File::create(dest.join("metadata/index.db")).unwrap();
     // Não cria `data/`
     let result = initialize_repository(dest.to_str().unwrap());
-    assert!(result.is_err(), "Deveria detectar inconsistência (db existe, data ausente)");
+    assert!(
+        result.is_err(),
+        "Deveria detectar inconsistência (db existe, data ausente)"
+    );
 }

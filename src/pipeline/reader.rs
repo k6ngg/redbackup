@@ -3,7 +3,7 @@
 //! Regra: não carregar o arquivo inteiro na memória quando possível; usar streaming.
 
 use std::fs::File;
-use std::io::{Read, BufReader};
+use std::io::{BufReader, Read};
 
 pub fn read_file_stream(path: &str) -> std::io::Result<Vec<u8>> {
     let file = File::open(path)?;

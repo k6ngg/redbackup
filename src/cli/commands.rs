@@ -14,7 +14,10 @@ pub fn exit_with_code(code: i32, msg: &str) -> ! {
 
 /// Comando `init` — configura diretórios de origem/destino e chave.
 pub fn cmd_init(source: &str, destination: &str, key_file: Option<&str>) -> i32 {
-    println!("Iniciando configuração: source={}, destination={}, key_file={:?}", source, destination, key_file);
+    println!(
+        "Iniciando configuração: source={}, destination={}, key_file={:?}",
+        source, destination, key_file
+    );
     if source.is_empty() || destination.is_empty() {
         eprintln!("ERRO [1]: Diretórios de origem e destino são obrigatórios.");
         return 1;
@@ -32,7 +35,10 @@ pub fn cmd_backup_manual() -> i32 {
 
 /// Comando `restore` — restaura arquivo a partir de snapshot.
 pub fn cmd_restore(snapshot: &str, file_path: &str, output: &str, force: bool) -> i32 {
-    println!("Restaurando: snapshot={}, file={}, output={}, force={}", snapshot, file_path, output, force);
+    println!(
+        "Restaurando: snapshot={}, file={}, output={}, force={}",
+        snapshot, file_path, output, force
+    );
     if file_path.is_empty() || output.is_empty() {
         eprintln!("ERRO [1]: Caminho de arquivo e saída são obrigatórios para restauração.");
         return 1;

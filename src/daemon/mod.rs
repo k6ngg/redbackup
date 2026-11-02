@@ -7,6 +7,6 @@
 //! Comunicação local via IPC nativo.
 //! Shutdown controlado (SIGTERM/SIGINT): finalizar operações pendentes, liberar recursos.
 
-pub mod watcher;
 pub mod queue;
 pub mod server;
+pub mod watcher;

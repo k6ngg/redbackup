@@ -12,8 +12,8 @@
 //! 9. Finalizar metadados e snapshot após confirmar persistência física.
 
 pub mod chunking;
-pub mod hash;
 pub mod compress;
 pub mod crypto;
-pub mod write;
+pub mod hash;
 pub mod reader;
+pub mod write;

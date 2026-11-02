@@ -13,7 +13,9 @@ pub fn encrypt(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, data).expect("Falha na criptografia AES-GCM");
+    let ciphertext = cipher
+        .encrypt(nonce, data)
+        .expect("Falha na criptografia AES-GCM");
     let mut result = Vec::with_capacity(1 + 12 + ciphertext.len());
     result.push(1); // version
     result.extend_from_slice(&nonce_bytes);
@@ -29,5 +31,7 @@ pub fn decrypt(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
     let ciphertext = &data[13..];
     let cipher = Aes256Gcm::new_from_slice(key).expect("Chave AES-256-GCM inválida");
     let nonce = Nonce::from_slice(nonce_bytes);
-    cipher.decrypt(nonce, ciphertext).expect("Falha na descriptografia AES-GCM")
+    cipher
+        .decrypt(nonce, ciphertext)
+        .expect("Falha na descriptografia AES-GCM")
 }

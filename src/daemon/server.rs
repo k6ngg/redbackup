@@ -7,7 +7,11 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 
-#[allow(clippy::unused_io_amount, clippy::redundant_pattern_matching, clippy::manual_flatten)]
+#[allow(
+    clippy::unused_io_amount,
+    clippy::redundant_pattern_matching,
+    clippy::manual_flatten
+)]
 pub fn start_server<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
     if path.as_ref().exists() {
         std::fs::remove_file(&path)?;

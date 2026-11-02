@@ -2,13 +2,13 @@
 //!
 //! Arquitetura: um crate único, módulos internos tratados como futuras crates.
 
+pub mod cli;
 pub mod config;
-pub mod repository;
+pub mod daemon;
 pub mod metadata;
 pub mod pipeline;
-pub mod daemon;
-pub mod cli;
-pub mod restoration;
 pub mod recovery;
+pub mod repository;
+pub mod restoration;
 pub mod retention;
 pub mod scrubbing;

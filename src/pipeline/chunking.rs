@@ -2,8 +2,6 @@
 //!
 //! Usa parâmetros configuráveis (min_size, max_size) conforme `config/settings.rs`.
 
-
-
 pub fn chunk_file(data: &[u8], min_size: usize, max_size: usize) -> Vec<Vec<u8>> {
     let avg_size = std::cmp::max(min_size, 256);
     let mut chunks = Vec::new();

@@ -19,9 +19,9 @@
 use std::fs::create_dir_all;
 
 pub mod init;
+use crate::config::validation::{set_directory_permissions, validate_path};
+use anyhow::{Context, Result};
 use std::path::PathBuf;
-use anyhow::{Result, Context};
-use crate::config::validation::{validate_path, set_directory_permissions};
 
 pub fn initialize_repository(destination_path: &str) -> Result<PathBuf> {
     let dest = validate_path(destination_path, false)?;
@@ -52,8 +52,12 @@ pub fn initialize_repository(destination_path: &str) -> Result<PathBuf> {
         if !dir.exists() {
             create_dir_all(dir)
                 .with_context(|| format!("Falha ao criar diretório: {}", dir.display()))?;
-            set_directory_permissions(dir, mode)
-                .with_context(|| format!("Falha ao definir permissões no diretório: {}", dir.display()))?;
+            set_directory_permissions(dir, mode).with_context(|| {
+                format!(
+                    "Falha ao definir permissões no diretório: {}",
+                    dir.display()
+                )
+            })?;
         }
     }
 

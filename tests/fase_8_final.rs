@@ -1,11 +1,11 @@
 //! Testes finais da Fase 8 — Integração ponta-a-ponta, stress e portabilidade.
 
+use redbackup::pipeline::{chunking, compress, crypto, hash, write};
 use std::fs;
-use redbackup::pipeline::{chunking, hash, compress, crypto, write};
 
 const CHAVE_TESTE: [u8; 32] = [
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-    17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+    27, 28, 29, 30, 31, 32,
 ];
 
 /// Teste de integração ponta-a-ponta: arquivo → chunk → hash → compress → crypto → write.
@@ -23,7 +23,9 @@ fn integracao_ponta_a_ponta() {
 
         let comprimido = compress::compress(chunk, 3);
         let criptografado = crypto::encrypt(&comprimido, &CHAVE_TESTE);
-        let arquivo_chunk = temp_dir.path().join(format!("chunk_final_{}", &hash_str[..8]));
+        let arquivo_chunk = temp_dir
+            .path()
+            .join(format!("chunk_final_{}", &hash_str[..8]));
         write::atomic_write(&criptografado, &arquivo_chunk).expect("falha na escrita atomica");
         assert!(arquivo_chunk.exists());
     }

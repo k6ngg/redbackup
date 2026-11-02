@@ -13,10 +13,7 @@ pub enum FileEvent {
     Deleted(String),
 }
 
-pub fn start_watcher(
-    path: &str,
-    sender: Sender<FileEvent>,
-) -> notify::Result<RecommendedWatcher> {
+pub fn start_watcher(path: &str, sender: Sender<FileEvent>) -> notify::Result<RecommendedWatcher> {
     let mut watcher: RecommendedWatcher = Watcher::new(
         move |res: notify::Result<Event>| {
             if let Ok(event) = res {

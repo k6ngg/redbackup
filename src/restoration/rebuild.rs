@@ -8,11 +8,11 @@
 //! 5. Validar resultado (hash BLAKE3, se necessário).
 //! 6. Mover atômico para destino final (com verificação de conflito).
 
+use crate::pipeline::{compress, crypto};
+use anyhow::{Context, Result};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
-use anyhow::{Result, Context};
-use crate::pipeline::{crypto, compress};
 
 /// Reconstrói um arquivo restaurado a partir do repositório.
 /// `key` é a chave AES-256 (32 bytes).
@@ -33,10 +33,7 @@ pub fn restore_file(
     let parent = dest_path.parent().unwrap_or(Path::new("."));
     fs::create_dir_all(parent)?;
 
-    let tmp_path = parent.join(format!(
-        ".restored_tmp_{}",
-        std::process::id()
-    ));
+    let tmp_path = parent.join(format!(".restored_tmp_{}", std::process::id()));
     {
         let mut output = File::create(&tmp_path)?;
         for (hash_id, _order) in chunk_hashes {
