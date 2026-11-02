@@ -9,3 +9,6 @@ pub mod pipeline;
 pub mod daemon;
 pub mod cli;
 pub mod restoration;
+pub mod recovery;
+pub mod retention;
+pub mod scrubbing;
