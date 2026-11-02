@@ -7,6 +7,9 @@
 //! - `file_chunks`
 //!
 //! Requisitos: `PRAGMA foreign_keys = ON`; índices adequados.
+//!
+//! A migração v2 (em `migrations.rs`) adiciona `corrupted_at` e
+//! `corruption_reason` à tabela `chunks` para o diagnóstico do scrubbing.
 
 pub const INITIAL_SCHEMA: &str = r#"
 PRAGMA foreign_keys = ON;

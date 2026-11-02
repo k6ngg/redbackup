@@ -7,6 +7,7 @@ use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
 use std::sync::mpsc::Sender;
 
+#[derive(Debug, Clone)]
 pub enum FileEvent {
     Created(String),
     Modified(String),

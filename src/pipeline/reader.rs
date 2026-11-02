@@ -1,6 +1,8 @@
 //! Leitura segura de arquivos para backup.
 //!
-//! Regra: não carregar o arquivo inteiro na memória quando possível; usar streaming.
+//! O pipeline de backup usa `File` diretamente com `stream_chunks`, mantendo
+//! memória limitada ao tamanho máximo de chunk. Esta função permanece para
+//! operações pontuais e testes.
 
 use std::fs::File;
 use std::io::{BufReader, Read};

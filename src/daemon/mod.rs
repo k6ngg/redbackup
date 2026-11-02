@@ -1,12 +1,12 @@
 //! Daemon e watcher: observação de sistema de arquivos e fila de eventos.
 //!
-//! Usa `notify` para eventos (criação, modificação, exclusão).
-//! Fila interna com limite (ex: 10.000 eventos).
-//! Eventos duplicados/consolidados tratados.
-//! Processamento pesado não ocorre diretamente no callback; encaminhado para worker.
-//! Comunicação local via IPC nativo.
-//! Shutdown controlado (SIGTERM/SIGINT): finalizar operações pendentes, liberar recursos.
+//! O daemon expõe comandos de backup/manutenção via IPC local (Unix socket).
+//! O watcher encaminha eventos para uma fila com limite; processamento pesado
+//! nunca ocorre diretamente no callback.
 
+pub mod client;
+pub mod protocol;
 pub mod queue;
 pub mod server;
+pub mod watch;
 pub mod watcher;

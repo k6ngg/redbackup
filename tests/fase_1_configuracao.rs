@@ -28,3 +28,23 @@ fn inicializacao_detecta_inconsistencia() {
         "Deveria detectar inconsistência (db existe, data ausente)"
     );
 }
+
+#[test]
+fn inicializacao_rejeita_diretorio_nao_vazio_sem_repositorio() {
+    let temp_dir = tempfile::tempdir().expect("falha ao criar tempdir");
+    let dest = temp_dir.path().join("pasta_de_imagens");
+    fs::create_dir_all(&dest).unwrap();
+    let imagem = dest.join("captura.png");
+    fs::write(&imagem, b"conteudo").unwrap();
+
+    let result = initialize_repository(dest.to_str().unwrap());
+    assert!(
+        result.is_err(),
+        "não deveria transformar uma pasta arbitrária em repositório"
+    );
+    assert!(imagem.exists(), "arquivo do usuário não pode ser alterado");
+    assert!(
+        !dest.join("metadata").exists(),
+        "nenhuma estrutura de repositório deveria ser criada"
+    );
+}

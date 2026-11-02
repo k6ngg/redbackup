@@ -2,6 +2,7 @@
 //!
 //! Arquitetura: um crate único, módulos internos tratados como futuras crates.
 
+pub mod backup;
 pub mod cli;
 pub mod config;
 pub mod daemon;

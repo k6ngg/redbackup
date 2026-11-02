@@ -13,6 +13,23 @@ fn aplicacao_de_migracao_cria_tabelas() {
     run_migrations(&conn).expect("falha ao rodar migrações");
     // Se chegar até aqui sem erro, as tabelas foram criadas.
     assert!(db_path.exists());
+
+    let versions: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT version FROM schema_version ORDER BY version")
+            .unwrap();
+        let rows = stmt.query_map([], |row| row.get(0)).unwrap();
+        rows.map(|row| row.unwrap()).collect()
+    };
+    assert_eq!(versions, vec![1, 2]);
+
+    let columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(chunks)").unwrap();
+        let rows = stmt.query_map([], |row| row.get(1)).unwrap();
+        rows.map(|row| row.unwrap()).collect()
+    };
+    assert!(columns.iter().any(|name| name == "corrupted_at"));
+    assert!(columns.iter().any(|name| name == "corruption_reason"));
 }
 
 #[test]

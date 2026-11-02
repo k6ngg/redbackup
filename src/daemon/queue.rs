@@ -1,7 +1,8 @@
 //! Fila interna de eventos do daemon.
 //!
-//! Limite configurável (ex: 10.000 eventos). Quando atinge o limite,
-//! consolida eventos (ex: realiza uma nova varredura manual) e loga claramente.
+//! Limite configurável. Quando o limite é atingido, o evento novo é rejeitado
+//! e o chamador deve executar uma nova varredura completa, evitando perda
+//! silenciosa de alterações em cenários de alta atividade.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -20,10 +21,11 @@ impl EventQueue {
     }
 
     pub fn enqueue(&self, event: String) -> bool {
-        let mut queue = self.inner.lock().unwrap();
+        let mut queue = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if queue.len() >= self.limit {
-            // Limite atingido: consolida removendo duplicados (simplificado)
-            // Na implementação completa, seria realizada uma nova varredura manual.
             false
         } else {
             queue.push_back(event);
@@ -32,8 +34,21 @@ impl EventQueue {
     }
 
     pub fn dequeue_all(&self) -> Vec<String> {
-        let mut queue = self.inner.lock().unwrap();
-        let events: Vec<String> = queue.drain(..).collect();
-        events
+        let mut queue = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        queue.drain(..).collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
