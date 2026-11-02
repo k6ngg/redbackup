@@ -26,35 +26,92 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 O binário de desenvolvimento fica em `target/debug/redbackup`. Os exemplos abaixo usam `redbackup`; substitua por `./target/debug/redbackup` ou `cargo run --` se preferir.
 
-### 3. Início Rápido
+### 3. Tutorial: fazer backup e restaurar um arquivo
+
+Este exemplo salva os arquivos de `/home/usuario/documentos` no repositório `/home/usuario/backups/redbackup` e depois restaura um documento. Os caminhos seguem o formato Linux: substitua `usuario` pelo seu nome de usuário e adapte as pastas ao seu ambiente. A origem deve existir e o destino deve ser um diretório vazio ou um repositório redbackup existente.
+
+#### Passo 1 — Criar uma chave nova
+
+Crie o diretório que guardará a chave, caso ainda não exista:
 
 ```bash
-# 1. (Opcional) Gerar explicitamente uma chave AES-256 com permissão 0600.
-redbackup keygen --path /caminho/seguro/chave.bin
+mkdir -p /home/usuario/chaves
+```
 
-# 2. Inicializar o repositório. Se a chave não existir, ela é gerada.
+Gere a chave com o próprio redbackup:
+
+```bash
+redbackup keygen --path /home/usuario/chaves/redbackup.key
+```
+
+O comando cria um arquivo de 32 bytes aleatórios e aplica permissão `0600` em Unix. **Não crie um arquivo vazio para servir de chave.** O caminho informado deve estar livre: `keygen` recusa sobrescrever qualquer arquivo existente, inclusive um arquivo vazio. Se já houver um arquivo vazio nesse caminho, escolha outro nome para a nova chave e use esse mesmo caminho nas etapas seguintes.
+
+Gere a chave apenas na configuração inicial. Nos próximos backups deste repositório, preserve e use a mesma chave.
+
+#### Passo 2 — Inicializar o repositório
+
+```bash
 redbackup init \
   --source /home/usuario/documentos \
-  --dest /home/usuario/backup-redbackup \
-  --key-file /caminho/seguro/chave.bin
-
-# 3. Criar um snapshot.
-redbackup backup --repo /home/usuario/backup-redbackup
-
-# 4. Listar snapshots e arquivos.
-redbackup list-snapshots --repo /home/usuario/backup-redbackup
-redbackup list-files --repo /home/usuario/backup-redbackup --snapshot 1
-
-# 5. Restaurar um arquivo para um caminho escolhido.
-redbackup restore \
-  --repo /home/usuario/backup-redbackup \
-  --snapshot 1 \
-  --file documentos/relatorio.pdf \
-  --output /tmp/restaurado/relatorio.pdf
-
-# 6. Verificar a integridade dos chunks.
-redbackup scrub --repo /home/usuario/backup-redbackup
+  --dest /home/usuario/backups/redbackup \
+  --key-file /home/usuario/chaves/redbackup.key
 ```
+
+`--source` indica a pasta que será salva; `--dest`, onde os chunks e metadados serão armazenados; e `--key-file`, a chave usada na criptografia. O comando grava essas configurações em `/home/usuario/backups/redbackup/config/settings.json`, incluindo o caminho da chave, sem incluir seu conteúdo.
+
+A inicialização prepara o repositório. O snapshot é criado no próximo passo.
+
+#### Passo 3 — Executar o backup
+
+```bash
+redbackup backup --repo /home/usuario/backups/redbackup
+```
+
+O programa lê a origem configurada e cria um snapshot. Confira o ID informado e o status: `completed` indica conclusão sem erros reportados; `failed` indica que houve falhas e que as mensagens devem ser examinadas.
+
+Para salvar novas versões dos arquivos posteriormente, execute novamente esse comando. Cada execução cria outro snapshot e pode reutilizar chunks já armazenados. Não é necessário repetir `keygen` ou `init`.
+
+#### Passo 4 — Consultar snapshots e arquivos
+
+Liste os snapshots disponíveis:
+
+```bash
+redbackup list-snapshots --repo /home/usuario/backups/redbackup
+```
+
+Use o ID retornado para consultar os arquivos. Neste exemplo, o snapshot escolhido tem ID `1`; substitua esse número se o ID desejado for outro:
+
+```bash
+redbackup list-files --repo /home/usuario/backups/redbackup --snapshot 1
+```
+
+Copie o caminho relativo do arquivo exatamente como aparece nessa listagem. Nomes com espaços devem ficar entre aspas no comando de restauração.
+
+#### Passo 5 — Restaurar um arquivo
+
+Supondo que a listagem contenha `relatorio.pdf`, execute:
+
+```bash
+redbackup restore \
+  --repo /home/usuario/backups/redbackup \
+  --snapshot 1 \
+  --file "relatorio.pdf" \
+  --output /tmp/relatorio-restaurado.pdf
+```
+
+O comando reconstrói o arquivo e valida os chunks antes de publicar a saída em `/tmp/relatorio-restaurado.pdf`. Abra o arquivo restaurado para conferir o resultado. Se o destino já existir, escolha outro caminho ou use `--force` quando quiser substituí-lo explicitamente.
+
+O caminho da chave é recuperado da configuração, por isso não precisa ser repetido nos comandos `backup` e `restore` deste exemplo.
+
+#### Passo 6 — Verificar os chunks armazenados
+
+```bash
+redbackup scrub --repo /home/usuario/backups/redbackup
+```
+
+Esse comando verifica autenticação, descompressão e hash dos chunks e reporta problemas encontrados. Ele não repara automaticamente dados corrompidos.
+
+**Guarde `/home/usuario/chaves/redbackup.key` separadamente do repositório e mantenha uma cópia segura dela. Sem a chave original, os backups não podem ser restaurados.**
 
 O repositório pode ser indicado de três formas, nesta ordem de precedência:
 
