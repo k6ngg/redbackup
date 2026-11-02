@@ -9,3 +9,5 @@
 //!
 //! Mensagens claras, códigos de saída úteis.
 //! Chave tratada como segredo: não exposta em argumentos visíveis ou logs.
+
+pub mod commands;
