@@ -92,3 +92,27 @@ pub fn get_chunk(
     }).optional()?;
     Ok(result)
 }
+
+/// Recupera a lista ordenada de chunks para um arquivo específico dentro de um snapshot.
+pub fn get_file_chunks(
+    conn: &Connection,
+    snapshot_id: i64,
+    file_path: &str,
+) -> Result<Vec<(String, i32)>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.hash_id, fc.order_index
+         FROM file_chunks fc
+         JOIN files f ON fc.file_id = f.id
+         JOIN chunks c ON fc.chunk_hash = c.hash_id
+         WHERE f.snapshot_id = ?1 AND f.path = ?2
+         ORDER BY fc.order_index ASC"
+    )?;
+    let rows = stmt.query_map(params![snapshot_id, file_path], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
+    })?;
+    let mut chunks = Vec::new();
+    for row in rows {
+        chunks.push(row?);
+    }
+    Ok(chunks)
+}

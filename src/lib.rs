@@ -8,3 +8,4 @@ pub mod metadata;
 pub mod pipeline;
 pub mod daemon;
 pub mod cli;
+pub mod restoration;
