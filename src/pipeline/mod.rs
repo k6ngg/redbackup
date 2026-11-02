@@ -10,3 +10,10 @@
 //! 7. Criptografar com AES-256-GCM (nonce único por operação).
 //! 8. Gravar com estratégia segura (arquivo temporário + rename atômico).
 //! 9. Finalizar metadados e snapshot após confirmar persistência física.
+
+pub mod chunking;
+pub mod hash;
+pub mod compress;
+pub mod crypto;
+pub mod write;
+pub mod reader;
