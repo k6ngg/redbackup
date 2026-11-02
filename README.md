@@ -228,7 +228,7 @@ O atendimento permite até 16 conexões simultâneas: consultas podem ser atendi
 redbackup watch [--repo <repositório>] [--key-file <chave>] [--debounce N]
 ```
 
-Monitora a origem com `notify`. Eventos de criação, modificação e remoção são enfileirados; após `N` segundos sem novos eventos (padrão `5`), um backup completo é executado. O callback do watcher não faz I/O pesado. A fila tem limite de 10.000 eventos; ao atingi-lo, o backup é disparado imediatamente e a fila é consolidada. Sem eventos, não há backup periódico.
+Monitora a origem com `notify`. Eventos de criação, modificação e remoção são enfileirados; após `N` segundos sem novos eventos (padrão `5`), um backup completo é executado. O callback do watcher não faz I/O pesado. As notificações são consolidadas em memória constante. Há uma varredura inicial; depois, alterações disparam backups com debounce e espera máxima de 60 segundos sob atividade contínua.
 
 ### 5. Estrutura do Repositório
 
@@ -398,3 +398,91 @@ O comando IPC `status` retorna o mesmo resumo em `data`, incluindo
 `backup_active`, `backup_interrupted` e `backup`. Não requer a chave do cliente.
 O progresso detalhado refere-se ao backup; outras operações preservam os locks
 existentes, mas não publicam os mesmos contadores.
+
+### Executar como serviço Linux (`redbackupd`)
+
+O executável `redbackupd` atende IPC e monitora a origem configurada. Ele realiza
+uma varredura inicial após 5 segundos e cria novos snapshots após alterações,
+com debounce de 5 segundos. Atividade contínua dispara uma varredura após até
+60 segundos. Falhas deixam o trabalho pendente para nova tentativa. Eventos do
+próprio repositório são excluídos e notificações são consolidadas em memória
+constante. Uma operação já em execução pode prolongar esses intervalos.
+
+Instale os dois executáveis e a unidade do usuário:
+
+```bash
+cargo install --path . --force --locked
+mkdir -p "$HOME/.config/systemd/user"
+install -m644 packaging/systemd/redbackupd.service "$HOME/.config/systemd/user/redbackupd.service"
+systemctl --user daemon-reload
+systemctl --user enable --now redbackupd.service
+```
+
+A unidade usa `~/.cargo/bin/redbackupd`. Se você usa outro diretório de instalação,
+ajuste `ExecStart`. Para atualizar uma unidade antiga, copie novamente o arquivo,
+execute `daemon-reload` e `systemctl --user restart redbackupd.service`.
+`service.env` deixou de ser necessário.
+
+Sem argumentos, `redbackupd` supervisiona os repositórios cadastrados em
+`$XDG_CONFIG_HOME/redbackup/repositories.json` ou, por padrão,
+`~/.config/redbackup/repositories.json`. Sem cadastro, permanece ativo aguardando
+configuração. Não procura repositórios pelo disco e não gera chaves.
+
+Após um `redbackup init` bem-sucedido, o destino é cadastrado automaticamente para
+monitoramento. O supervisor consulta o cadastro a cada 2 segundos e inicia os
+repositórios cadastrados, sem precisar reiniciar o serviço. Cada repositório usa
+sua própria configuração e chave. Para cadastrar um repositório existente:
+
+```bash
+redbackup repository add /home/usuario/backups/redbackup
+redbackup repository list
+```
+
+Todos os destinos cadastrados são selecionados para monitoramento. Para parar de
+monitorar um deles, preservando seus arquivos e snapshots:
+
+```bash
+redbackup repository remove /home/usuario/backups/redbackup
+```
+
+A remoção aguarda operações já aceitas terminarem. Destinos desconectados,
+configurações inválidas e chaves ausentes são reportados nos logs e tentados
+novamente a cada 10 segundos. Um cadastro JSON inválido não substitui o arquivo
+nem encerra os serviços já ativos. O cadastro usa escrita atômica e lock para
+preservar registros em inicializações concorrentes.
+
+`--repo` e a variável `REDBACKUP_REPO` mantêm o modo explícito de um único
+repositório. Para o modo automático, deixe essa variável ausente no ambiente do
+serviço. O comando IPC `shutdown` encerra um worker; enquanto estiver cadastrado,
+o supervisor poderá iniciá-lo novamente. Use `repository remove` para desativá-lo
+ou `systemctl --user stop redbackupd.service` para parar todos.
+
+```bash
+systemctl --user status redbackupd.service
+journalctl --user -u redbackupd.service -f
+```
+
+Para consultar os backups e controlar o serviço:
+
+```bash
+redbackup status --repo /home/usuario/backups/redbackup --watch
+systemctl --user stop redbackupd.service
+systemctl --user restart redbackupd.service
+```
+
+O serviço é ativado pelo gerenciador do usuário. Para mantê-lo disponível sem
+sessão aberta, configure `loginctl enable-linger usuario` conforme as permissões
+da máquina. A origem, o destino e a chave precisam estar acessíveis nesse contexto.
+
+`SIGTERM`, `SIGINT` e o comando IPC `shutdown` solicitam parada controlada:
+o daemon recusa novas tarefas e aguarda as operações aceitas terminarem. A unidade
+usa `TimeoutStopSec=infinity` para não interromper um backup por timeout; uma
+operação de I/O travada pode, portanto, prolongar a parada indefinidamente.
+Reinícios após falha têm intervalo de 10 segundos. Encerramentos abruptos podem
+exigir `recover`; a inicialização não apaga resíduos automaticamente.
+
+Uma instância por repositório é garantida por `metadata/daemon.lock`. O comando
+`redbackup daemon --repo ...` permanece como alternativa compatível e usa o mesmo
+serviço, incluindo monitoramento. `redbackup watch` continua disponível para
+monitoramento separado; evite executá-lo junto do daemon para a mesma origem.
+Para execução manual use `redbackupd --repo /caminho/do/repositorio`.

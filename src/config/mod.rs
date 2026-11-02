@@ -4,5 +4,6 @@
 //! Usar arquivo separado (`--key-file`) com permissões `0o600`.
 
 pub mod key;
+pub mod registry;
 pub mod settings;
 pub mod validation;

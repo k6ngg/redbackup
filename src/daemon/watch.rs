@@ -1,72 +1,99 @@
-//! Loop de monitoramento com debounce.
-//!
-//! O callback do `notify` apenas envia eventos para um canal. Este loop
-//! consolida eventos e só executa o backup após um período de calmaria (ou
-//! quando a fila atinge o limite), evitando processamento pesado no callback.
+//! Constant-memory event coalescing and cooperative shutdown.
+use crate::{backup, config::settings::Settings};
+use anyhow::Result;
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use std::{
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
-use crate::backup;
-use crate::config::settings::Settings;
-use crate::daemon::queue::EventQueue;
-use crate::daemon::watcher::start_watcher;
-use anyhow::{Context, Result};
-use std::sync::mpsc;
-use std::time::Duration;
+pub fn observe(
+    root: &Path,
+    settings: &Settings,
+    dirty: Arc<AtomicBool>,
+) -> Result<RecommendedWatcher> {
+    let excluded = root.canonicalize()?;
+    let mut watcher = RecommendedWatcher::new(
+        move |event: notify::Result<notify::Event>| match event {
+            Ok(event) => {
+                if !matches!(event.kind, notify::EventKind::Access(_))
+                    && (event.paths.is_empty()
+                        || event.paths.iter().any(|p| !p.starts_with(&excluded)))
+                {
+                    dirty.store(true, Ordering::Release);
+                }
+            }
+            Err(error) => {
+                eprintln!("Watcher: {}; nova varredura pendente", error);
+                dirty.store(true, Ordering::Release);
+            }
+        },
+        Config::default(),
+    )?;
+    watcher.watch(Path::new(&settings.source_path), RecursiveMode::Recursive)?;
+    Ok(watcher)
+}
 
-pub fn run(
-    repo_root: &std::path::Path,
+pub fn worker(
+    root: &Path,
     settings: &Settings,
     key: &[u8; 32],
-    debounce_seconds: u64,
-) -> Result<()> {
-    let (sender, receiver) = mpsc::channel();
-    let _watcher = start_watcher(&settings.source_path, sender)
-        .context("Falha ao iniciar watcher do sistema de arquivos")?;
-    let queue = EventQueue::new(10_000);
-    let debounce = Duration::from_secs(debounce_seconds.max(1));
-
-    println!(
-        "Monitorando {} (debounce: {}s). Use Ctrl+C para encerrar.",
-        settings.source_path,
-        debounce.as_secs()
-    );
-
-    loop {
-        match receiver.recv_timeout(debounce) {
-            Ok(event) => {
-                if !queue.enqueue(format!("{:?}", event)) {
-                    eprintln!(
-                        "Fila de eventos cheia; executando backup e consolidando uma nova varredura."
+    debounce: u64,
+    dirty: &AtomicBool,
+    stop: &AtomicBool,
+) {
+    let debounce = Duration::from_secs(debounce.max(1));
+    let mut pending = false;
+    let mut last = Instant::now();
+    let mut first = Instant::now();
+    while !stop.load(Ordering::Acquire) {
+        if dirty.swap(false, Ordering::AcqRel) {
+            if !pending {
+                first = Instant::now();
+            }
+            pending = true;
+            last = Instant::now();
+        }
+        if pending && (last.elapsed() >= debounce || first.elapsed() >= Duration::from_secs(60)) {
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
+            match backup::run_backup(root, settings, key) {
+                Ok(report) if report.status == "completed" => {
+                    println!(
+                        "Backup automático concluído: snapshot {}",
+                        report.snapshot_id
                     );
-                    run_once(repo_root, settings, key);
-                    let _ = queue.dequeue_all();
+                    pending = false;
                 }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if !queue.is_empty() {
-                    let events = queue.dequeue_all();
-                    println!("{} evento(s) recebido(s); iniciando backup.", events.len());
-                    run_once(repo_root, settings, key);
+                Ok(report) => {
+                    eprintln!(
+                        "Snapshot {} falhou: {:?}",
+                        report.snapshot_id, report.errors
+                    );
+                    last = Instant::now();
+                    first = last;
                 }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                println!("Watcher encerrado.");
-                return Ok(());
+                Err(error) => {
+                    eprintln!("Backup automático adiado: {:#}", error);
+                    last = Instant::now();
+                    first = last;
+                }
             }
         }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
-fn run_once(repo_root: &std::path::Path, settings: &Settings, key: &[u8; 32]) {
-    match backup::run_backup(repo_root, settings, key) {
-        Ok(report) => {
-            println!(
-                "Backup automático: snapshot {} status `{}` ({} arquivo(s), {} byte(s)).",
-                report.snapshot_id, report.status, report.files_completed, report.bytes_total
-            );
-            for error in report.errors {
-                eprintln!("ARQUIVO FALHOU [{}]: {}", error.path, error.message);
-            }
-        }
-        Err(error) => eprintln!("Backup automático falhou: {}", error),
-    }
+pub fn run(root: &Path, settings: &Settings, key: &[u8; 32], debounce: u64) -> Result<()> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let _signals = super::lifecycle::Signals::new(stop.clone())?;
+    let dirty = Arc::new(AtomicBool::new(true));
+    let _watcher = observe(root, settings, dirty.clone())?;
+    worker(root, settings, key, debounce, &dirty, &stop);
+    Ok(())
 }

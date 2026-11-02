@@ -1,0 +1,14 @@
+[Unit]
+Description=redbackup backup service
+
+[Service]
+Type=exec
+ExecStart=%h/.cargo/bin/redbackupd
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=infinity
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

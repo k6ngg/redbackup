@@ -159,6 +159,14 @@ pub fn cmd_init_full(
         return 2;
     }
 
+    if let Err(error) = crate::config::registry::register(&destination_path) {
+        eprintln!(
+            "Repositório criado, mas cadastro automático falhou: {:#}. Use repository add.",
+            error
+        );
+        return 2;
+    }
+    println!("Repositório cadastrado para monitoramento automático.");
     println!(
         "Repositório inicializado em: {}",
         destination_path.display()
@@ -567,6 +575,19 @@ pub fn cmd_recover(repo: Option<&str>) -> i32 {
 
 /// Comando `daemon` — inicia o servidor IPC em primeiro plano.
 pub fn cmd_daemon(repo: Option<&str>, key_file: Option<&str>) -> i32 {
+    if repo.is_none() && std::env::var_os("REDBACKUP_REPO").is_none() {
+        if key_file.is_some() {
+            eprintln!("--key-file requer --repo no modo explícito");
+            return 1;
+        }
+        return match crate::daemon::manager::run() {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("Daemon: {:#}", error);
+                1
+            }
+        };
+    }
     let root = match resolve_repository(repo) {
         Ok(root) => root,
         Err(error) => {
@@ -882,5 +903,31 @@ fn daemon_state(root: &Path) -> &'static str {
     {
         let _ = root;
         "não suportado nesta plataforma"
+    }
+}
+
+pub fn cmd_repository(args: &[String]) -> i32 {
+    let result = (|| -> Result<()> {
+        let dir = crate::config::registry::directory()?;
+        match args {
+            [action] if action == "list" => {
+                for path in crate::config::registry::list_at(&dir)? {
+                    println!("{}", path.display());
+                }
+            }
+            [action, path] if action == "add" || action == "remove" => {
+                crate::config::registry::update_at(&dir, Path::new(path), action == "add")?;
+                println!("Cadastro atualizado; remoção não apaga backups.");
+            }
+            _ => anyhow::bail!("Uso: redbackup repository list | add <caminho> | remove <caminho>"),
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("Cadastro: {:#}", error);
+            1
+        }
     }
 }

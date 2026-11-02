@@ -21,9 +21,33 @@ use std::os::unix::fs::PermissionsExt;
 
 #[cfg(unix)]
 pub fn serve(repo_root: &Path, key: &[u8; 32]) -> Result<()> {
+    let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _signals = super::lifecycle::Signals::new(shutdown.clone())?;
+    serve_until(repo_root, key, shutdown)
+}
+
+#[cfg(unix)]
+pub fn serve_until(
+    repo_root: &Path,
+    key: &[u8; 32],
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
     use std::os::unix::net::{UnixListener, UnixStream};
 
     let settings = Settings::load(repo_root)?;
+    use fs2::FileExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::Arc;
+    let instance = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(crate::repository::metadata_dir(repo_root).join("daemon.lock"))?;
+    instance
+        .try_lock_exclusive()
+        .context("Já existe um daemon para este repositório")?;
     let path = socket_path(repo_root);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -41,6 +65,7 @@ pub fn serve(repo_root: &Path, key: &[u8; 32]) -> Result<()> {
 
     let listener = UnixListener::bind(&path)
         .with_context(|| format!("Falha ao criar socket IPC: {}", path.display()))?;
+    let _socket_cleanup = SocketCleanup(path.clone());
     let mut perms = fs::metadata(&path)?.permissions();
     perms.set_mode(0o600);
     fs::set_permissions(&path, perms)?;
@@ -50,10 +75,25 @@ pub fn serve(repo_root: &Path, key: &[u8; 32]) -> Result<()> {
     println!("Use Ctrl+C para encerrar (ou envie o comando `shutdown`).");
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    let shutdown = AtomicBool::new(false);
+
+    let dirty = Arc::new(AtomicBool::new(true));
+    let _watcher = super::watch::observe(repo_root, &settings, dirty.clone())?;
     let active = AtomicUsize::new(0);
     listener.set_nonblocking(true)?;
     std::thread::scope(|scope| {
+        let worker_stop = &shutdown;
+        let worker_settings = &settings;
+        let worker_dirty = &dirty;
+        scope.spawn(move || {
+            super::watch::worker(
+                repo_root,
+                worker_settings,
+                key,
+                5,
+                worker_dirty,
+                worker_stop,
+            )
+        });
         while !shutdown.load(Ordering::Acquire) {
             match listener.accept() {
                 Ok((stream, _)) => {
@@ -66,7 +106,7 @@ pub fn serve(repo_root: &Path, key: &[u8; 32]) -> Result<()> {
                     let shutdown = &shutdown;
                     let settings = &settings;
                     scope.spawn(move || {
-                        match handle_connection(stream, repo_root, settings, key) {
+                        match handle_connection(stream, repo_root, settings, key, shutdown) {
                             Ok(true) => shutdown.store(true, Ordering::Release),
                             Ok(false) => {}
                             Err(error) => eprintln!("ERRO IPC: {:#}", error),
@@ -79,13 +119,13 @@ pub fn serve(repo_root: &Path, key: &[u8; 32]) -> Result<()> {
                 }
                 Err(error) => {
                     eprintln!("ERRO IPC: {}", error);
+                    shutdown.store(true, Ordering::Release);
                     break;
                 }
             }
         }
     });
 
-    let _ = fs::remove_file(&path);
     if shutdown.load(Ordering::Acquire) {
         println!("Daemon encerrado.");
     }
@@ -103,6 +143,7 @@ fn handle_connection(
     repo_root: &Path,
     settings: &Settings,
     key: &[u8; 32],
+    stopping: &std::sync::atomic::AtomicBool,
 ) -> Result<bool> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
@@ -128,6 +169,15 @@ fn handle_connection(
         }
     };
 
+    if stopping.load(std::sync::atomic::Ordering::Acquire)
+        && !matches!(request.command.as_str(), "ping" | "status" | "shutdown")
+    {
+        write_response(
+            stream,
+            &Response::error("Daemon encerrando; nova tarefa recusada"),
+        )?;
+        return Ok(false);
+    }
     let (response, shutdown) = match request.command.as_str() {
         "ping" => (Response::ok("pong"), false),
         "status" => (
@@ -267,4 +317,17 @@ fn snapshot_listing(repo_root: &Path) -> Result<String> {
         ));
     }
     Ok(lines.join("\n"))
+}
+
+#[cfg(unix)]
+struct SocketCleanup(std::path::PathBuf);
+#[cfg(unix)]
+impl Drop for SocketCleanup {
+    fn drop(&mut self) {
+        if let Err(error) = fs::remove_file(&self.0) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("Falha ao remover socket: {}", error);
+            }
+        }
+    }
 }

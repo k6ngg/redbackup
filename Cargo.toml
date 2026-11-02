@@ -2,6 +2,7 @@
 name = "redbackup"
 version = "0.1.0"
 edition = "2021"
+default-run = "redbackup"
 
 [dependencies]
 # Fundamental crates conforme AGENTS.md e technical_specifications.md
@@ -21,3 +22,6 @@ fs2 = "0.4"
 
 [dev-dependencies]
 # Para testes futuros
+
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"

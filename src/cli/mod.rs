@@ -22,6 +22,7 @@ pub fn run(args: Vec<String>) -> i32 {
     }
     let command = args.get(1).map(String::as_str).unwrap_or("help");
     match command {
+        "repository" => cmd_repository(&args[2..]),
         "init" => match parse_options(&args[2..]) {
             Ok(parsed) => {
                 if let Err(error) = parsed.only(&[
@@ -231,6 +232,7 @@ fn print_help() {
     println!("Mecanismo de backup com deduplicação, compressão e criptografia.");
     println!();
     println!("Uso:");
+    println!("  redbackup repository list | add <caminho> | remove <caminho>");
     println!("  redbackup init --source <origem> --dest <repositório> --key-file <chave>");
     println!("      [--retention-days N] [--min-chunk N] [--max-chunk N]");
     println!("  redbackup status [--repo <repositório>] [--watch]");
