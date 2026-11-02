@@ -6,3 +6,7 @@
 //! Processamento pesado não ocorre diretamente no callback; encaminhado para worker.
 //! Comunicação local via IPC nativo.
 //! Shutdown controlado (SIGTERM/SIGINT): finalizar operações pendentes, liberar recursos.
+
+pub mod watcher;
+pub mod queue;
+pub mod server;
