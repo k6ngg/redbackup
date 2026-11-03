@@ -1,0 +1,22 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --locked --bins --target-dir debian/cargo-target
+
+override_dh_auto_test:
+	cargo test --locked --workspace --target-dir debian/cargo-target
+
+override_dh_auto_install:
+	install -Dm755 debian/cargo-target/release/redbackup debian/redbackup/usr/bin/redbackup
+	install -Dm755 debian/cargo-target/release/redbackupd debian/redbackup/usr/bin/redbackupd
+	install -Dm644 packaging/systemd/redbackupd.service debian/redbackup/usr/lib/systemd/user/redbackupd.service
+	sed -i 's|^ExecStart=.*|ExecStart=/usr/bin/redbackupd|' debian/redbackup/usr/lib/systemd/user/redbackupd.service
+
+# The account owner controls activation and restarts.
+override_dh_installsystemduser:
+
+override_dh_auto_clean:
+	rm -rf debian/cargo-target

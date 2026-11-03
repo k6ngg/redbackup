@@ -1,0 +1,12 @@
+Source: redbackup
+Section: utils
+Priority: optional
+Maintainer: redbackup local builds <redbackup@localhost>
+Build-Depends: debhelper-compat (= 13), cargo, rustc, pkgconf, libsqlite3-dev
+Rules-Requires-Root: no
+
+Package: redbackup
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd
+Description: deduplicating backup engine and user daemon
+ Creates and restores encrypted snapshots of local files.
