@@ -189,21 +189,28 @@ fn handle_connection(
         ),
         "backup" => match backup::run_backup(repo_root, settings, key) {
             Ok(report) => {
-                let status = if report.status == "completed" {
+                let status = if matches!(report.status.as_str(), "completed" | "unchanged") {
                     "ok"
                 } else {
                     "error"
                 };
-                let message = format!(
-                    "snapshot {}: {} arquivo(s), {} concluído(s), {} falha(s), {} byte(s), {} chunk(s) novo(s), {} reutilizado(s)",
-                    report.snapshot_id,
-                    report.files_total,
-                    report.files_completed,
-                    report.files_failed,
-                    report.bytes_total,
-                    report.chunks_new,
-                    report.chunks_reused
-                );
+                let message = if report.status == "unchanged" {
+                    format!(
+                        "nenhuma alteração detectada; snapshot {} mantido",
+                        report.snapshot_id
+                    )
+                } else {
+                    format!(
+                        "snapshot {}: {} arquivo(s), {} concluído(s), {} falha(s), {} byte(s), {} chunk(s) novo(s), {} reutilizado(s)",
+                        report.snapshot_id,
+                        report.files_total,
+                        report.files_completed,
+                        report.files_failed,
+                        report.bytes_total,
+                        report.chunks_new,
+                        report.chunks_reused
+                    )
+                };
                 let data = serde_json::json!({
                     "snapshot_id": report.snapshot_id,
                     "status": report.status,

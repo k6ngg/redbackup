@@ -238,7 +238,7 @@ pub fn cmd_backup(repo: Option<&str>, key_file: Option<&str>, use_daemon: bool) 
                             }
                         }
                         if let Some(status) = data.get("status").and_then(|value| value.as_str()) {
-                            if status != "completed" {
+                            if !matches!(status, "completed" | "unchanged") {
                                 return 4;
                             }
                         }
@@ -272,22 +272,29 @@ pub fn cmd_backup(repo: Option<&str>, key_file: Option<&str>, use_daemon: bool) 
 
     match backup::run_backup(&root, &settings, &key) {
         Ok(report) => {
-            println!(
-                "Snapshot {} finalizado com status `{}`: {} arquivo(s) de {} processado(s), {} byte(s).",
-                report.snapshot_id,
-                report.status,
-                report.files_completed,
-                report.files_total,
-                report.bytes_total
-            );
-            println!(
-                "Chunks: {} novo(s), {} reutilizado(s).",
-                report.chunks_new, report.chunks_reused
-            );
+            if report.status == "unchanged" {
+                println!(
+                    "Nenhuma alteração detectada; snapshot {} mantido ({} arquivo(s), {} byte(s)).",
+                    report.snapshot_id, report.files_completed, report.bytes_total
+                );
+            } else {
+                println!(
+                    "Snapshot {} finalizado com status `{}`: {} arquivo(s) de {} processado(s), {} byte(s).",
+                    report.snapshot_id,
+                    report.status,
+                    report.files_completed,
+                    report.files_total,
+                    report.bytes_total
+                );
+                println!(
+                    "Chunks: {} novo(s), {} reutilizado(s).",
+                    report.chunks_new, report.chunks_reused
+                );
+            }
             for error in &report.errors {
                 eprintln!("ARQUIVO FALHOU [{}]: {}", error.path, error.message);
             }
-            if report.status == "completed" {
+            if matches!(report.status.as_str(), "completed" | "unchanged") {
                 0
             } else {
                 4
@@ -838,6 +845,7 @@ pub fn cmd_status(repo: Option<&str>, watch: bool) -> i32 {
                     "registering" => "registrando metadados",
                     "verifying" => "verificando referências",
                     "completed" => "concluído",
+                    "unchanged" => "sem alterações",
                     "failed" => "falhou",
                     _ => "desconhecida",
                 };

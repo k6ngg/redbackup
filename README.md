@@ -154,6 +154,8 @@ redbackup backup [--repo <repositório>] [--key-file <chave>] [--manual] [--no-d
 
 Percorre a origem recursivamente, processa cada arquivo em fluxo, grava chunks novos de forma atômica e registra o snapshot. Arquivos com erro são reportados individualmente; o snapshot só recebe status `completed` se todos os arquivos e a verificação final de integridade passarem. Caso contrário, recebe `failed`, mas os dados já gravados permanecem recuperáveis.
 
+Se o conteúdo da origem for idêntico ao do último snapshot concluído, o snapshot em andamento é descartado e o resultado é `unchanged`: nenhum registro redundante é publicado. A comparação usa caminhos, tamanhos, permissões e a sequência de hashes de chunks; alterações apenas de `mtime` não geram um novo snapshot.
+
 `--manual` é aceito por compatibilidade e não altera o comportamento. `--no-daemon` força a execução local mesmo que exista um daemon no repositório.
 
 #### `restore`
@@ -406,7 +408,9 @@ uma varredura inicial após 5 segundos e cria novos snapshots após alterações
 com debounce de 5 segundos. Atividade contínua dispara uma varredura após até
 60 segundos. Falhas deixam o trabalho pendente para nova tentativa. Eventos do
 próprio repositório são excluídos e notificações são consolidadas em memória
-constante. Uma operação já em execução pode prolongar esses intervalos.
+constante. Uma operação já em execução pode prolongar esses intervalos. Quando o
+evento não altera o conteúdo, a varredura é executada mas o snapshot em
+andamento é descartado (`unchanged`), mantendo o último snapshot concluído.
 
 Instale os dois executáveis e a unidade do usuário:
 
@@ -486,3 +490,61 @@ Uma instância por repositório é garantida por `metadata/daemon.lock`. O coman
 serviço, incluindo monitoramento. `redbackup watch` continua disponível para
 monitoramento separado; evite executá-lo junto do daemon para a mesma origem.
 Para execução manual use `redbackupd --repo /caminho/do/repositorio`.
+
+## Pacotes Linux para validação local
+
+Gere cada pacote em uma VM limpa da distribuição alvo com acesso ao registro
+do Cargo. Os binários são compilados a partir do `Cargo.lock` e os pacotes
+instalam uma unit de usuário em conjunto com os dois executáveis em
+`/usr/bin`. Os comandos abaixo partem da raiz do checkout. Os diretórios
+passados a `prepare.sh` devem ser novos.
+
+**Debian 13 (amd64)**
+
+```bash
+sudo apt install build-essential dpkg-dev debhelper cargo rustc pkgconf libsqlite3-dev
+work=$(mktemp -d)
+source_dir=$(./packaging/prepare.sh deb "$work/deb")
+(cd "$source_dir" && dpkg-buildpackage -b -us -uc)
+dpkg-deb --info "$work"/deb/redbackup_*_amd64.deb
+dpkg-deb --contents "$work"/deb/redbackup_*_amd64.deb
+sudo apt install "$work"/deb/redbackup_*_amd64.deb
+```
+
+**openSUSE Tumbleweed (x86_64)**
+
+```bash
+sudo zypper install rpm-build cargo rust gcc pkg-config sqlite3-devel systemd-devel systemd-rpm-macros
+work=$(mktemp -d)
+version=$(./packaging/prepare.sh rpm "$work/rpm")
+rpmbuild -bb --define "_topdir $work/rpm" \
+    --define "redbackup_version $version" packaging/rpm/redbackup.spec
+rpm -qpl "$work"/rpm/RPMS/x86_64/redbackup-"$version"-*.rpm
+rpm -qpR "$work"/rpm/RPMS/x86_64/redbackup-"$version"-*.rpm
+sudo zypper install "$work"/rpm/RPMS/x86_64/redbackup-"$version"-*.rpm
+```
+
+**Ativação por conta**
+
+Se estiver migrando de uma instalação via Cargo, pare a instância antiga
+com `systemctl --user disable --now redbackupd.service`. Mova a unit manual
+`~/.config/systemd/user/redbackupd.service` para um caminho de backup ainda
+livre fora desse diretório. Uma unit local ou um override de `ExecStart`
+pode ter precedência sobre a versão empacotada.
+
+Como o usuário que executará os backups, rode:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now redbackupd.service
+systemctl --user show -p FragmentPath -p ExecStart -p MainPID redbackupd.service
+```
+
+Após atualizar o pacote, execute `systemctl --user daemon-reload` e
+`systemctl --user restart redbackupd.service` em cada conta que já usa o
+serviço. Antes de remover o pacote, execute
+`systemctl --user disable --now redbackupd.service` nessas contas. A
+configuração, as chaves e os repositórios continuam sob controle do usuário.
+
+Estas receitas são para builds locais. Defina a licença do projeto antes
+de publicar os pacotes.

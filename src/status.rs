@@ -192,7 +192,7 @@ pub fn repository_status(root: &Path) -> Result<serde_json::Value> {
     let interrupted = !active
         && progress
             .as_ref()
-            .is_some_and(|p| !matches!(p.stage.as_str(), "completed" | "failed"));
+            .is_some_and(|p| !matches!(p.stage.as_str(), "completed" | "unchanged" | "failed"));
     Ok(
         serde_json::json!({"repository":root,"source":settings.source_path,"snapshots":counts,"last_completed":last.map(|(id,timestamp)| serde_json::json!({"id":id,"timestamp":timestamp})),"chunks":chunks,"corruption_recorded":corrupted,"backup_active":active,"backup_interrupted":interrupted,"backup":progress}),
     )

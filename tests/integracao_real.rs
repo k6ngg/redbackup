@@ -252,12 +252,17 @@ fn deduplicacao_reutiliza_chunks() {
     );
 
     let segundo = backup::run_backup(&repo, &settings, &CHAVE).unwrap();
-    assert_eq!(segundo.status, "completed");
+    assert_eq!(
+        segundo.status, "unchanged",
+        "sem alterações, nenhum snapshot novo deve ser publicado"
+    );
+    assert_eq!(segundo.snapshot_id, primeiro.snapshot_id);
     assert_eq!(
         segundo.chunks_new, 0,
         "segundo backup não deveria gravar chunks"
     );
     assert!(segundo.chunks_reused > 0);
+    assert_eq!(list_snapshots(&conn).unwrap().len(), 1);
 
     // Referências são contadas por ocorrência em `file_chunks`.
     let refs: i64 = conn
@@ -271,6 +276,96 @@ fn deduplicacao_reutiliza_chunks() {
         .query_row("SELECT COUNT(*) FROM file_chunks", [], |row| row.get(0))
         .unwrap();
     assert_eq!(refs, ocorrencias);
+}
+
+#[test]
+fn alteracao_apenas_de_mtime_nao_cria_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("origem");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&source).unwrap();
+    let arquivo = escrever(&source, "arquivo.txt", b"conteudo inalterado");
+
+    let settings = configurar(&source, &repo);
+    let primeiro = backup::run_backup(&repo, &settings, &CHAVE).unwrap();
+    assert_eq!(primeiro.status, "completed");
+
+    let novo_mtime = filetime::FileTime::from_unix_time(1_700_000_000, 0);
+    filetime::set_file_mtime(&arquivo, novo_mtime).unwrap();
+
+    let segundo = backup::run_backup(&repo, &settings, &CHAVE).unwrap();
+    assert_eq!(
+        segundo.status, "unchanged",
+        "mtime sem mudança de conteúdo não deve gerar snapshot"
+    );
+    assert_eq!(segundo.snapshot_id, primeiro.snapshot_id);
+
+    let conn = conectar(&repo);
+    assert_eq!(list_snapshots(&conn).unwrap().len(), 1);
+    let refs: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(reference_count), 0) FROM chunks",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let ocorrencias: i64 = conn
+        .query_row("SELECT COUNT(*) FROM file_chunks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        refs, ocorrencias,
+        "descartar o snapshot deve desfazer as referências incrementadas"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn alteracao_de_permissao_cria_novo_snapshot() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("origem");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&source).unwrap();
+    let arquivo = escrever(&source, "arquivo.txt", b"conteudo inalterado");
+    fs::set_permissions(&arquivo, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let settings = configurar(&source, &repo);
+    let primeiro = backup::run_backup(&repo, &settings, &CHAVE).unwrap();
+    assert_eq!(primeiro.status, "completed");
+
+    fs::set_permissions(&arquivo, fs::Permissions::from_mode(0o640)).unwrap();
+    let segundo = backup::run_backup(&repo, &settings, &CHAVE).unwrap();
+    assert_eq!(
+        segundo.status, "completed",
+        "mudança de permissão afeta a restauração e deve gerar snapshot"
+    );
+    assert_ne!(segundo.snapshot_id, primeiro.snapshot_id);
+}
+
+#[test]
+fn alteracao_de_conteudo_cria_novo_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("origem");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&source).unwrap();
+    escrever(&source, "arquivo.txt", b"conteudo original");
+
+    let settings = configurar(&source, &repo);
+    let primeiro = backup::run_backup(&repo, &settings, &CHAVE).unwrap();
+    assert_eq!(primeiro.status, "completed");
+
+    escrever(&source, "arquivo.txt", b"conteudo modificado");
+    let segundo = backup::run_backup(&repo, &settings, &CHAVE).unwrap();
+    assert_eq!(segundo.status, "completed");
+    assert_ne!(segundo.snapshot_id, primeiro.snapshot_id);
+
+    let conn = conectar(&repo);
+    let snapshots = list_snapshots(&conn).unwrap();
+    assert_eq!(snapshots.len(), 2);
+    assert!(snapshots
+        .iter()
+        .all(|snapshot| snapshot.status == "completed"));
 }
 
 #[test]

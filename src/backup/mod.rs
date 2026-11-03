@@ -4,12 +4,17 @@
 //! chunks físicos são gravados antes de qualquer metadado. A transação SQLite
 //! que registra o arquivo, seus chunks e as referências é curta e só é aberta
 //! depois que todos os chunks do arquivo estão persistidos.
+//!
+//! Quando o conteúdo é idêntico ao do último snapshot concluído, o snapshot em
+//! andamento é descartado e o resultado recebe o status `unchanged`; nenhum
+//! registro redundante é publicado.
 
 use crate::config::settings::Settings;
 use crate::config::validation::{relative_path_for_metadata, set_directory_permissions};
 use crate::metadata::repository::{
-    connect_or_create, create_snapshot, finish_snapshot, get_chunk, insert_file, insert_file_chunk,
-    upsert_chunk, verify_snapshot_integrity,
+    connect_or_create, create_snapshot, discard_snapshot, finish_snapshot, get_chunk, insert_file,
+    insert_file_chunk, previous_completed_snapshot, snapshots_have_same_content, upsert_chunk,
+    verify_snapshot_integrity,
 };
 use crate::pipeline::{chunking, compress, crypto, hash, write};
 use crate::repository::lock::RepositoryLock;
@@ -126,6 +131,19 @@ pub fn run_backup(repo_root: &Path, settings: &Settings, key: &[u8; 32]) -> Resu
                     .iter()
                     .filter(|e| e.path != "<snapshot>")
                     .count();
+                // Um evento do watcher pode não alterar o conteúdo. Nesse caso,
+                // descarta o snapshot em andamento em vez de publicar um registro
+                // idêntico ao último concluído.
+                if report.errors.is_empty() {
+                    if let Some(previous) = previous_completed_snapshot(&conn)? {
+                        if snapshots_have_same_content(&conn, snapshot_id, previous)? {
+                            discard_snapshot(&mut conn, snapshot_id)?;
+                            report.status = "unchanged".to_string();
+                            report.snapshot_id = previous;
+                            return Ok(report);
+                        }
+                    }
+                }
                 let status = if report.errors.is_empty() {
                     "completed"
                 } else {

@@ -222,6 +222,144 @@ pub fn finish_snapshot(conn: &Connection, snapshot_id: i64, status: &str) -> Res
     Ok(())
 }
 
+/// Retorna o snapshot concluído mais recente, se houver.
+pub fn previous_completed_snapshot(conn: &Connection) -> Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM snapshots WHERE status = 'completed' ORDER BY id DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .context("Falha ao consultar o último snapshot concluído")
+}
+
+/// Compara o conteúdo registrado em dois snapshots.
+///
+/// O critério é o conjunto de caminhos, tamanhos, permissões e a sequência de
+/// hashes de chunks. `modification_time` não entra na comparação: uma alteração
+/// apenas de mtime não representa novo conteúdo e não deve gerar um snapshot
+/// redundante. Permissões continuam sendo comparadas porque afetam a restauração.
+pub fn snapshots_have_same_content(
+    conn: &Connection,
+    left_snapshot: i64,
+    right_snapshot: i64,
+) -> Result<bool> {
+    if !same_file_rows(conn, left_snapshot, right_snapshot)? {
+        return Ok(false);
+    }
+    same_chunk_rows(conn, left_snapshot, right_snapshot)
+}
+
+fn same_file_rows(conn: &Connection, left_snapshot: i64, right_snapshot: i64) -> Result<bool> {
+    let mut left_stmt = conn.prepare(
+        "SELECT path, size, permissions FROM files WHERE snapshot_id = ?1 ORDER BY path",
+    )?;
+    let mut right_stmt = conn.prepare(
+        "SELECT path, size, permissions FROM files WHERE snapshot_id = ?1 ORDER BY path",
+    )?;
+    let mut left_rows = left_stmt.query(params![left_snapshot])?;
+    let mut right_rows = right_stmt.query(params![right_snapshot])?;
+    loop {
+        match (left_rows.next()?, right_rows.next()?) {
+            (None, None) => return Ok(true),
+            (Some(left), Some(right)) => {
+                let left_path: String = left.get(0)?;
+                let right_path: String = right.get(0)?;
+                let left_size: i64 = left.get(1)?;
+                let right_size: i64 = right.get(1)?;
+                let left_permissions: Option<i64> = left.get(2)?;
+                let right_permissions: Option<i64> = right.get(2)?;
+                if left_path != right_path
+                    || left_size != right_size
+                    || left_permissions != right_permissions
+                {
+                    return Ok(false);
+                }
+            }
+            _ => return Ok(false),
+        }
+    }
+}
+
+fn same_chunk_rows(conn: &Connection, left_snapshot: i64, right_snapshot: i64) -> Result<bool> {
+    let mut left_stmt = conn.prepare(
+        "SELECT f.path, fc.order_index, fc.chunk_hash
+         FROM file_chunks fc
+         JOIN files f ON f.id = fc.file_id
+         WHERE f.snapshot_id = ?1
+         ORDER BY f.path, fc.order_index",
+    )?;
+    let mut right_stmt = conn.prepare(
+        "SELECT f.path, fc.order_index, fc.chunk_hash
+         FROM file_chunks fc
+         JOIN files f ON f.id = fc.file_id
+         WHERE f.snapshot_id = ?1
+         ORDER BY f.path, fc.order_index",
+    )?;
+    let mut left_rows = left_stmt.query(params![left_snapshot])?;
+    let mut right_rows = right_stmt.query(params![right_snapshot])?;
+    loop {
+        match (left_rows.next()?, right_rows.next()?) {
+            (None, None) => return Ok(true),
+            (Some(left), Some(right)) => {
+                let left_path: String = left.get(0)?;
+                let right_path: String = right.get(0)?;
+                let left_order: i64 = left.get(1)?;
+                let right_order: i64 = right.get(1)?;
+                let left_hash: String = left.get(2)?;
+                let right_hash: String = right.get(2)?;
+                if left_path != right_path || left_order != right_order || left_hash != right_hash {
+                    return Ok(false);
+                }
+            }
+            _ => return Ok(false),
+        }
+    }
+}
+
+/// Descarta um snapshot em andamento e desfaz suas referências.
+///
+/// Usado quando o conteúdo é idêntico ao do snapshot concluído anterior. Os
+/// chunks físicos não são removidos: qualquer chunk referenciado continua em uso
+/// pelo snapshot anterior. A operação é transacional para nunca deixar
+/// `reference_count` inconsistente com `file_chunks`.
+pub fn discard_snapshot(conn: &mut Connection, snapshot_id: i64) -> Result<()> {
+    let tx = conn
+        .transaction()
+        .context("Falha ao abrir transação para descartar snapshot")?;
+    tx.execute(
+        "UPDATE chunks
+         SET reference_count = reference_count - (
+             SELECT COUNT(*)
+             FROM file_chunks fc
+             JOIN files f ON f.id = fc.file_id
+             WHERE f.snapshot_id = ?1 AND fc.chunk_hash = chunks.hash_id
+         )
+         WHERE hash_id IN (
+             SELECT fc.chunk_hash
+             FROM file_chunks fc
+             JOIN files f ON f.id = fc.file_id
+             WHERE f.snapshot_id = ?1
+         )",
+        params![snapshot_id],
+    )
+    .context("Falha ao desfazer referências do snapshot descartado")?;
+    let removed = tx
+        .execute(
+            "DELETE FROM snapshots WHERE id = ?1 AND status = 'in-progress'",
+            params![snapshot_id],
+        )
+        .context("Falha ao remover snapshot descartado")?;
+    if removed != 1 {
+        anyhow::bail!(
+            "Snapshot {} não está em andamento e não pode ser descartado",
+            snapshot_id
+        );
+    }
+    tx.commit()
+        .context("Falha ao confirmar descarte do snapshot")
+}
+
 /// Marca snapshots deixados em andamento por uma execução anterior como falhos.
 pub fn fail_stale_in_progress_snapshots(conn: &Connection) -> Result<usize> {
     let changed = conn

@@ -70,6 +70,13 @@ pub fn worker(
                     );
                     pending = false;
                 }
+                Ok(report) if report.status == "unchanged" => {
+                    println!(
+                        "Nenhuma alteração detectada; snapshot {} mantido",
+                        report.snapshot_id
+                    );
+                    pending = false;
+                }
                 Ok(report) => {
                     eprintln!(
                         "Snapshot {} falhou: {:?}",
