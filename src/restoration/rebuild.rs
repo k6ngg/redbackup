@@ -7,6 +7,7 @@
 use crate::metadata::repository::{get_file_chunks, get_file_info, FileInfo};
 use crate::pipeline::{compress, crypto, hash};
 use crate::repository::chunk_path;
+use crate::repository::key_binding;
 use crate::repository::lock::RepositoryLock;
 use anyhow::{Context, Result};
 use filetime::FileTime;
@@ -37,6 +38,7 @@ pub fn restore_from_snapshot(
     force: bool,
 ) -> Result<RestoreReport> {
     crate::repository::checked_relative_path(stored_path)?;
+    key_binding::require_matching_key_if_bound(conn, key)?;
     // Compartilhado: impede que pruning/recuperação removam chunks enquanto o
     // arquivo está sendo lido, sem impedir outras restaurações/scrubbings.
     let _lock = RepositoryLock::shared(repo_root)?;

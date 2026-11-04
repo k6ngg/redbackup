@@ -24,6 +24,7 @@ use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
 
 pub mod init;
+pub mod key_binding;
 pub mod lock;
 
 pub fn data_dir(repo_root: &Path) -> PathBuf {

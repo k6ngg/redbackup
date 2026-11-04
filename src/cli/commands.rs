@@ -21,7 +21,7 @@ use crate::metadata::repository::{
 };
 use crate::recovery;
 use crate::repository::{
-    index_db_path, initialize_repository, open_repository, settings_path, socket_path,
+    index_db_path, initialize_repository, key_binding, open_repository, settings_path, socket_path,
 };
 use crate::restoration::rebuild::restore_from_snapshot;
 use crate::retention;
@@ -112,9 +112,9 @@ pub fn cmd_init_full(
         );
         return 1;
     }
-    let key_path = match key::ensure_key_file(&key_path) {
-        Ok(_key) => match key_path.canonicalize() {
-            Ok(path) => path,
+    let (key, key_path) = match key::ensure_key_file(&key_path) {
+        Ok(key) => match key_path.canonicalize() {
+            Ok(path) => (key, path),
             Err(error) => {
                 eprintln!("ERRO [2]: Falha ao resolver caminho da chave: {}", error);
                 return 2;
@@ -146,6 +146,22 @@ pub fn cmd_init_full(
         eprintln!("ERRO [1]: Configuração inválida: {}", error);
         return 1;
     }
+
+    // A chave é vinculada antes de alterar settings.json. Em um repositório
+    // existente, uma chave diferente é recusada sem sobrescrever a configuração.
+    let conn = match open_database(&destination_path) {
+        Ok(conn) => conn,
+        Err(error) => {
+            eprintln!("ERRO [4]: {}", error);
+            return 4;
+        }
+    };
+    if let Err(error) = key_binding::bind_repository_key(&conn, &destination_path, &key) {
+        eprintln!("ERRO [1]: Chave incompatível: {:#}", error);
+        return 1;
+    }
+    drop(conn);
+
     if let Err(error) = settings.save(&destination_path) {
         eprintln!("ERRO [2]: Falha ao salvar configuração: {}", error);
         return 2;

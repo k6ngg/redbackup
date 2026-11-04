@@ -8,7 +8,7 @@ use crate::backup;
 use crate::config::settings::Settings;
 use crate::daemon::protocol::{Request, Response};
 use crate::metadata::repository::{connect_or_create, list_snapshots};
-use crate::repository::{index_db_path, socket_path};
+use crate::repository::{index_db_path, key_binding, socket_path};
 use crate::retention;
 use crate::scrubbing;
 use anyhow::{Context, Result};
@@ -35,6 +35,8 @@ pub fn serve_until(
     use std::os::unix::net::{UnixListener, UnixStream};
 
     let settings = Settings::load(repo_root)?;
+    // Falha antes de abrir o socket se a chave não corresponder ao repositório.
+    key_binding::check_bound_key(repo_root, key)?;
     use fs2::FileExt;
     use std::os::unix::fs::OpenOptionsExt;
     use std::sync::Arc;

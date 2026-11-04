@@ -21,7 +21,19 @@ fn aplicacao_de_migracao_cria_tabelas() {
         let rows = stmt.query_map([], |row| row.get(0)).unwrap();
         rows.map(|row| row.unwrap()).collect()
     };
-    assert_eq!(versions, vec![1, 2]);
+    assert_eq!(versions, vec![1, 2, 3]);
+
+    let repository_key_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'repository_key'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(repository_key_table);
 
     let columns: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(chunks)").unwrap();

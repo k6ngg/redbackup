@@ -17,6 +17,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
 
     apply_v1(conn)?;
     apply_v2(conn)?;
+    apply_v3(conn)?;
     Ok(())
 }
 
@@ -74,4 +75,21 @@ fn apply_v2(conn: &Connection) -> Result<()> {
     }
 
     record(conn, 2)
+}
+
+/// v3: vincula a chave ao repositório por meio de um verificador derivado com
+/// BLAKE3 keyed. A chave em si nunca é persistida.
+fn apply_v3(conn: &Connection) -> Result<()> {
+    if already_applied(conn, 3)? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS repository_key (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            verifier TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );",
+    )
+    .context("Falha ao criar tabela repository_key")?;
+    record(conn, 3)
 }

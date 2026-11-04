@@ -97,6 +97,8 @@ pub fn worker(
 }
 
 pub fn run(root: &Path, settings: &Settings, key: &[u8; 32], debounce: u64) -> Result<()> {
+    // Falha cedo com uma chave que não pertence ao repositório.
+    crate::repository::key_binding::check_bound_key(root, key)?;
     let stop = Arc::new(AtomicBool::new(false));
     let _signals = super::lifecycle::Signals::new(stop.clone())?;
     let dirty = Arc::new(AtomicBool::new(true));

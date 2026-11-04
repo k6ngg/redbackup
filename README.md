@@ -134,7 +134,7 @@ redbackup init --source <origem> --dest <repositório> --key-file <arquivo> \
 - `--retention-days`: dias mínimos antes de um snapshot poder ser removido pelo `prune` (padrão `30`).
 - `--min-chunk` / `--max-chunk`: limites do FastCDC. Aceitam bytes ou sufixos `KiB`, `MiB`, `KB`, `MB`, `GB`. O mínimo deve ficar entre 64 bytes e 1 MiB; o máximo, entre 1 KiB e 16 MiB.
 
-`init` é idempotente para a estrutura do repositório: não apaga chunks nem metadados existentes. Ele recusa repositórios fisicamente inconsistentes, por exemplo `metadata/index.db` sem `data/` ou `data/` com arquivos sem banco. Um destino não vazio que não pareça um repositório redbackup também é recusado, para não misturar o repositório com dados do usuário (como uma pasta de imagens); use um diretório vazio ou dedicado. A chave é validada antes da criação da estrutura do repositório, evitando efeitos colaterais quando o arquivo de chave é inválido.
+`init` é idempotente para a estrutura do repositório: não apaga chunks nem metadados existentes. Ele recusa repositórios fisicamente inconsistentes, por exemplo `metadata/index.db` sem `data/` ou `data/` com arquivos sem banco. Um destino não vazio que não pareça um repositório redbackup também é recusado, para não misturar o repositório com dados do usuário (como uma pasta de imagens); use um diretório vazio ou dedicado. A chave é validada antes da criação da estrutura do repositório, evitando efeitos colaterais quando o arquivo de chave é inválido. `init` também vincula a chave ao repositório; repetir o comando com uma chave diferente é recusado sem alterar `settings.json` nem os dados existentes.
 
 O arquivo `config/settings.json` guarda apenas caminhos e parâmetros; **a chave nunca é gravada nele**.
 
@@ -152,7 +152,7 @@ Gera 32 bytes aleatórios, recusa sobrescrever um arquivo existente e aplica per
 redbackup backup [--repo <repositório>] [--key-file <chave>] [--manual] [--no-daemon]
 ```
 
-Percorre a origem recursivamente, processa cada arquivo em fluxo, grava chunks novos de forma atômica e registra o snapshot. Antes de reutilizar um chunk existente, o backup o autentica, descomprime e recalcula seu BLAKE3; se a validação falhar, o chunk não é reutilizado, a corrupção é registrada em `chunks` e o arquivo falha. Arquivos com erro são reportados individualmente; o snapshot só recebe status `completed` se todos os arquivos e a verificação final de integridade passarem. Caso contrário, recebe `failed`, mas os dados já gravados permanecem recuperáveis.
+Percorre a origem recursivamente, processa cada arquivo em fluxo, grava chunks novos de forma atômica e registra o snapshot. Antes de qualquer gravação, a chave é comparada com a vinculação do repositório; uma chave diferente é recusada sem criar snapshot ou chunk. Antes de reutilizar um chunk existente, o backup o autentica, descomprime e recalcula seu BLAKE3; se a validação falhar, o chunk não é reutilizado, a corrupção é registrada em `chunks` e o arquivo falha. Arquivos com erro são reportados individualmente; o snapshot só recebe status `completed` se todos os arquivos e a verificação final de integridade passarem. Caso contrário, recebe `failed`, mas os dados já gravados permanecem recuperáveis.
 
 Se o conteúdo da origem for idêntico ao do último snapshot concluído, o snapshot em andamento é descartado e o resultado é `unchanged`: nenhum registro redundante é publicado. A comparação usa caminhos, tamanhos, permissões e a sequência de hashes de chunks; alterações apenas de `mtime` não geram um novo snapshot.
 
@@ -255,6 +255,8 @@ O banco usa `foreign_keys = ON`, `journal_mode = WAL`, `synchronous = FULL` e `b
 - Formato persistido do chunk: `[versão: 1 byte][nonce: 12 bytes][ciphertext + tag]`.
 - A descriptografia falha de forma segura se a autenticação, o formato ou a versão estiverem inválidos.
 - A chave é lida de arquivo separado, nunca de `settings.json`, e o conteúdo não é exibido em logs.
+- O repositório guarda em `metadata/index.db` apenas um verificador derivado da chave com BLAKE3 em modo keyed. A chave não é persistida e o verificador não permite recuperá-la.
+- Backup, restauração, scrubbing e daemon exigem que a chave corresponda ao verificador. `init` e o primeiro backup de um repositório antigo criam a vinculação; na migração, todos os chunks existentes são autenticados com a chave fornecida e qualquer divergência impede a vinculação.
 - Em Unix, chaves e configurações usam `0600`; `metadata/` usa `0700`; `data/` e `config/` usam `0750`.
 - Caminhos de chunks são derivados de hash BLAKE3 validado e não podem escapar de `data/`.
 - Caminhos restaurados são relativos e validados contra `..`, caminhos absolutos e separadores inconsistentes.
@@ -270,6 +272,7 @@ O banco usa `foreign_keys = ON`, `journal_mode = WAL`, `synchronous = FULL` e `b
 - Arquivos alterados durante a leitura (tamanho ou `mtime`) são rejeitados para evitar metadados inconsistentes.
 - `recover` remove apenas `.tmp_*` e chunks sem referência; nunca apaga um chunk referenciado.
 - `scrub` registra corrupção sem apagar dados. A recuperação de um chunk corrompido depende de outra cópia/snapshot válido ou de backup externo.
+- Uma chave incompatível não altera diagnósticos: backup, restauração, scrubbing e daemon falham antes de gravar chunks, publicar snapshots ou marcar corrupção.
 
 ### 8. Códigos de Saída
 
@@ -289,7 +292,7 @@ O banco usa `foreign_keys = ON`, `journal_mode = WAL`, `synchronous = FULL` e `b
 - A origem não pode ser a raiz do repositório nem estar dentro dele; essa configuração é recusada por `init` e pelo motor de backup.
 - `mtime` é persistido com precisão de segundos. Permissões são restauradas em Unix; no Windows, o campo pode ser omitido.
 - Backup, pruning e recuperação são serializados por um lock exclusivo de repositório; scrubbing e restauração usam lock compartilhado. As gravações de chunks continuam atômicas e as transações SQLite são independentes do lock de arquivo.
-- Rotação, derivação e recuperação de chaves não estão implementadas. Perder a chave significa perder a capacidade de restaurar.
+- Rotação, derivação e recuperação de chaves não estão implementadas. Perder a chave significa perder a capacidade de restaurar; a chave vinculada ao repositório não pode ser trocada automaticamente.
 - GUI e empacotamento multiplataforma não fazem parte desta versão.
 
 ### 10. Arquitetura
@@ -297,7 +300,7 @@ O banco usa `foreign_keys = ON`, `journal_mode = WAL`, `synchronous = FULL` e `b
 Um crate único (`redbackup`) com módulos internos tratados como futuras crates:
 
 - `config/`: `settings.json`, validação de caminhos, permissões e chave.
-- `repository/`: construção centralizada de caminhos e inicialização do repositório.
+- `repository/`: construção centralizada de caminhos, inicialização e vinculação da chave ao repositório.
 - `metadata/`: schema, migrações versionadas e CRUD SQLite.
 - `pipeline/`: chunking, hashing, compressão, criptografia e escrita atômica.
 - `backup/`: orquestração do backup, deduplicação e registro de metadados.
@@ -348,17 +351,17 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-Os testes incluem integração ponta a ponta com backup, deduplicação, restauração byte a byte, arquivos vazios, nomes Unicode, permissões/`mtime`, pruning, scrubbing com corrupção, rejeição de chunks corrompidos na deduplicação e recuperação de snapshots interrompidos.
+Os testes incluem integração ponta a ponta com backup, deduplicação, restauração byte a byte, arquivos vazios, nomes Unicode, permissões/`mtime`, pruning, scrubbing com corrupção, rejeição de chunks corrompidos na deduplicação, vinculação e recusa de chaves incompatíveis e recuperação de snapshots interrompidos.
 
 ## Decisões Técnicas Documentadas
 
 - **Um crate único**: escolhido para o MVP; módulos internos podem ser extraídos para `crates/` no futuro.
 - **IPC nativo**: `UnixListener` (Linux/macOS); protocolo de uma linha JSON por conexão.
 - **Fallback local**: se o daemon não estiver disponível, a CLI executa a mesma engine localmente, sem duplicar lógica de domínio.
-- **Chave criptográfica**: não armazenada em `settings.json`; apenas o caminho do arquivo é persistido.
+- **Chave criptográfica**: não armazenada em `settings.json`; apenas o caminho do arquivo é persistido. O banco guarda um verificador BLAKE3 keyed que vincula a chave ao repositório.
 - **Formato do chunk**: `[versão: 1 byte][nonce: 12 bytes][ciphertext + tag]`.
 - **Escrita atômica**: temporário no mesmo filesystem + `persist`/rename; no Windows, `tempfile` usa substituição atômica.
-- **Migrações**: schema versionado em `schema_version`; a v2 adiciona o diagnóstico de corrupção.
+- **Migrações**: schema versionado em `schema_version`; a v2 adiciona o diagnóstico de corrupção e a v3 cria a vinculação da chave.
 - **VSS (Windows)**: previsto, não implementado nesta versão.
 - **GUI**: opcional; não implementada.
 

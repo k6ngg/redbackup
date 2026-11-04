@@ -9,6 +9,7 @@ use crate::metadata::repository::{
     clear_chunk_corruption, connect_or_create, list_chunk_hashes, mark_chunk_corrupted,
 };
 use crate::pipeline::verify::validate_stored_chunk;
+use crate::repository::key_binding;
 use crate::repository::lock::RepositoryLock;
 use crate::repository::{chunk_path, index_db_path};
 use anyhow::{Context, Result};
@@ -49,6 +50,8 @@ pub fn scrub_repository(
             .ok_or_else(|| anyhow::anyhow!("Caminho do banco não é UTF-8"))?,
     )?;
     run_migrations(&conn).context("Falha ao preparar schema para scrubbing")?;
+    // Uma chave diferente não deve gerar falsos diagnósticos de corrupção.
+    key_binding::require_matching_key_if_bound(&conn, key)?;
 
     let mut hashes = list_chunk_hashes(&conn)?;
     if let Some(limit) = sample {

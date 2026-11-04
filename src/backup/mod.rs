@@ -21,6 +21,7 @@ use crate::metadata::repository::{
     snapshots_have_same_content, upsert_chunk, verify_snapshot_integrity,
 };
 use crate::pipeline::{chunking, compress, crypto, hash, verify, write};
+use crate::repository::key_binding;
 use crate::repository::lock::RepositoryLock;
 use crate::repository::{chunk_path, index_db_path, initialize_repository, metadata_dir};
 use anyhow::{Context, Result};
@@ -104,6 +105,9 @@ pub fn run_backup(repo_root: &Path, settings: &Settings, key: &[u8; 32]) -> Resu
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("Caminho do banco não é UTF-8"))?,
         )?;
+        // A chave é vinculada antes de qualquer snapshot ou chunk novo. Assim,
+        // uma chave diferente é recusada sem alterar o repositório.
+        key_binding::bind_repository_key(&conn, &root, key)?;
 
         let snapshot_id = create_snapshot(&conn, &source.to_string_lossy())?;
         progress.value.report.snapshot_id = snapshot_id;

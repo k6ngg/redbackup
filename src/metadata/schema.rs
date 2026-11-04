@@ -5,11 +5,14 @@
 //! - `files`
 //! - `chunks`
 //! - `file_chunks`
+//! - `repository_key` (verificador da chave vinculada ao repositório)
 //!
 //! Requisitos: `PRAGMA foreign_keys = ON`; índices adequados.
 //!
 //! A migração v2 (em `migrations.rs`) adiciona `corrupted_at` e
-//! `corruption_reason` à tabela `chunks` para o diagnóstico do scrubbing.
+//! `corruption_reason` à tabela `chunks` para o diagnóstico do scrubbing. A
+//! migração v3 cria `repository_key`, que guarda apenas um verificador
+//! derivado da chave com BLAKE3 keyed.
 
 pub const INITIAL_SCHEMA: &str = r#"
 PRAGMA foreign_keys = ON;
