@@ -279,6 +279,128 @@ fn deduplicacao_reutiliza_chunks() {
 }
 
 #[test]
+fn backup_nao_reutiliza_chunk_corrompido() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("origem");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&source).unwrap();
+
+    let conteudo = b"conteudo compartilhado para validacao";
+    escrever(&source, "original.txt", conteudo);
+
+    let settings = configurar(&source, &repo);
+    let primeiro = backup::run_backup(&repo, &settings, &CHAVE).unwrap();
+    assert_eq!(primeiro.status, "completed");
+
+    let conn = conectar(&repo);
+    let hash = list_chunk_hashes(&conn).unwrap().remove(0);
+    let caminho = chunk_path(&repo, &hash).unwrap();
+    let original_criptografado = fs::read(&caminho).unwrap();
+
+    // Corrompe o chunk já armazenado e adiciona outro arquivo que geraria o
+    // mesmo chunk. O backup não pode reutilizá-lo nem publicar `completed`.
+    let mut corrompido = original_criptografado.clone();
+    let ultimo = corrompido.len() - 1;
+    corrompido[ultimo] ^= 0x01;
+    fs::write(&caminho, &corrompido).unwrap();
+    escrever(&source, "segundo.txt", conteudo);
+
+    let segundo = backup::run_backup(&repo, &settings, &CHAVE).unwrap();
+    assert_eq!(
+        segundo.status, "failed",
+        "snapshot com chunk corrompido não pode ser concluído"
+    );
+    assert_ne!(segundo.snapshot_id, primeiro.snapshot_id);
+    assert_eq!(segundo.files_completed, 0);
+    assert_eq!(segundo.files_failed, 2);
+    assert_eq!(segundo.chunks_new, 0);
+    assert_eq!(segundo.chunks_reused, 0);
+    assert!(
+        segundo.errors.iter().all(|erro| {
+            erro.message.contains("não será reutilizado")
+                || erro.message.contains("está corrompido")
+        }),
+        "erros inesperados: {:?}",
+        segundo.errors
+    );
+
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM snapshots WHERE id = ?1",
+            rusqlite::params![segundo.snapshot_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "failed");
+
+    // Nenhum arquivo ou referência de chunk foi publicado no snapshot falho.
+    let arquivos: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM files WHERE snapshot_id = ?1",
+            rusqlite::params![segundo.snapshot_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(arquivos, 0);
+    let referencias: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM file_chunks fc
+             JOIN files f ON f.id = fc.file_id
+             WHERE f.snapshot_id = ?1",
+            rusqlite::params![segundo.snapshot_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(referencias, 0);
+
+    // A corrupção fica registrada para diagnóstico sem apagar o chunk.
+    let marcado: Option<String> = conn
+        .query_row(
+            "SELECT corrupted_at FROM chunks WHERE hash_id = ?1",
+            rusqlite::params![&hash],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        marcado.is_some(),
+        "a corrupção detectada no backup deveria ser registrada"
+    );
+    assert!(caminho.is_file(), "o chunk corrompido não pode ser apagado");
+
+    // Depois de restaurar o chunk correto, o backup volta a reutilizá-lo,
+    // limpa o diagnóstico e permite restaurar o segundo arquivo.
+    fs::write(&caminho, &original_criptografado).unwrap();
+    let terceiro = backup::run_backup(&repo, &settings, &CHAVE).unwrap();
+    assert_eq!(terceiro.status, "completed");
+    assert!(terceiro.chunks_reused >= 1);
+
+    let marcado: Option<String> = conn
+        .query_row(
+            "SELECT corrupted_at FROM chunks WHERE hash_id = ?1",
+            rusqlite::params![&hash],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        marcado.is_none(),
+        "chunk validado deveria ter o diagnóstico limpo"
+    );
+
+    let saida = temp.path().join("segundo-restaurado.txt");
+    restore_from_snapshot(
+        &repo,
+        &conn,
+        terceiro.snapshot_id,
+        "segundo.txt",
+        &saida,
+        &CHAVE,
+        false,
+    )
+    .unwrap();
+    assert_eq!(fs::read(&saida).unwrap(), conteudo);
+}
+
+#[test]
 fn alteracao_apenas_de_mtime_nao_cria_snapshot() {
     let temp = tempfile::tempdir().unwrap();
     let source = temp.path().join("origem");

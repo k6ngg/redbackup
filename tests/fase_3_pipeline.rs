@@ -1,6 +1,6 @@
 //! Testes da Fase 3 — Pipeline de Backup (chunking, hashing, compressão, criptografia, escrita atômica).
 
-use redbackup::pipeline::{chunking, compress, crypto, hash, write};
+use redbackup::pipeline::{chunking, compress, crypto, hash, verify, write};
 use std::fs;
 
 const CHAVE_TESTE: [u8; 32] = [
@@ -40,5 +40,50 @@ fn fluxo_pipeline_basico() {
     assert!(
         tmp_files.is_empty(),
         "Nao deve haver arquivos .tmp residuais"
+    );
+}
+
+#[test]
+fn validacao_de_chunk_armazenado_detecta_corrupcao() {
+    let dados = b"conteudo de referencia para validacao de chunk armazenado";
+    let temp_dir = tempfile::tempdir().expect("falha ao criar tempdir");
+    let caminho = temp_dir.path().join("data/ab/chunk_validado");
+
+    let esperado = hash::hash_bytes(dados);
+    let comprimido = compress::try_compress(dados, 3).unwrap();
+    let criptografado = crypto::try_encrypt(&comprimido, &CHAVE_TESTE).unwrap();
+    write::atomic_write(&criptografado, &caminho).unwrap();
+
+    assert!(
+        verify::validate_stored_chunk(&caminho, &CHAVE_TESTE, &esperado).unwrap(),
+        "chunk íntegro deveria ser aceito"
+    );
+    assert!(
+        !verify::validate_stored_chunk(&caminho, &CHAVE_TESTE, &"0".repeat(64)).unwrap(),
+        "hash divergente deveria ser rejeitado"
+    );
+
+    let mut adulterado = criptografado.clone();
+    let ultimo = adulterado.len() - 1;
+    adulterado[ultimo] ^= 0x01;
+    fs::write(&caminho, &adulterado).unwrap();
+    assert!(
+        verify::validate_stored_chunk(&caminho, &CHAVE_TESTE, &esperado).is_err(),
+        "adulteração deveria falhar na autenticação"
+    );
+
+    fs::write(&caminho, &criptografado[..criptografado.len() / 2]).unwrap();
+    assert!(
+        verify::validate_stored_chunk(&caminho, &CHAVE_TESTE, &esperado).is_err(),
+        "chunk truncado deveria ser rejeitado"
+    );
+
+    // Outra chave não pode autenticar o chunk e também deve ser rejeitada.
+    fs::write(&caminho, &criptografado).unwrap();
+    let mut outra_chave = CHAVE_TESTE;
+    outra_chave[0] ^= 0xff;
+    assert!(
+        verify::validate_stored_chunk(&caminho, &outra_chave, &esperado).is_err(),
+        "chave incorreta deveria falhar na autenticação"
     );
 }

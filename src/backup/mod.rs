@@ -8,19 +8,24 @@
 //! Quando o conteúdo é idêntico ao do último snapshot concluído, o snapshot em
 //! andamento é descartado e o resultado recebe o status `unchanged`; nenhum
 //! registro redundante é publicado.
+//!
+//! Um chunk físico só é reutilizado depois de autenticado, descomprimido e ter
+//! seu hash BLAKE3 recalculado. Um arquivo existente mas corrompido nunca é
+//! incluído silenciosamente em um snapshot.
 
 use crate::config::settings::Settings;
 use crate::config::validation::{relative_path_for_metadata, set_directory_permissions};
 use crate::metadata::repository::{
-    connect_or_create, create_snapshot, discard_snapshot, finish_snapshot, get_chunk, insert_file,
-    insert_file_chunk, previous_completed_snapshot, snapshots_have_same_content, upsert_chunk,
-    verify_snapshot_integrity,
+    clear_chunk_corruption, connect_or_create, create_snapshot, discard_snapshot, finish_snapshot,
+    get_chunk, insert_file, insert_file_chunk, mark_chunk_corrupted, previous_completed_snapshot,
+    snapshots_have_same_content, upsert_chunk, verify_snapshot_integrity,
 };
-use crate::pipeline::{chunking, compress, crypto, hash, write};
+use crate::pipeline::{chunking, compress, crypto, hash, verify, write};
 use crate::repository::lock::RepositoryLock;
 use crate::repository::{chunk_path, index_db_path, initialize_repository, metadata_dir};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -188,6 +193,10 @@ fn backup_files(
     report.files_total = walk.files.len() + walk.errors.len();
     report.errors.extend(walk.errors);
 
+    // Um chunk validado uma vez neste backup não precisa ser lido novamente
+    // para cada ocorrência. O lock exclusivo impede que outro processo o
+    // altere enquanto o backup está ativo.
+    let mut validated_chunks = HashSet::new();
     progress.value.report = report.clone();
     progress.value.totals_known = true;
     progress.value.stage = "processing".into();
@@ -199,7 +208,16 @@ fn backup_files(
         progress.value.current_file = Some(path.display().to_string());
         progress.value.current_file_bytes = 0;
         progress.publish(true);
-        match process_file(conn, repo_root, source, path, settings, key, progress) {
+        match process_file(
+            conn,
+            repo_root,
+            source,
+            path,
+            settings,
+            key,
+            progress,
+            &mut validated_chunks,
+        ) {
             Ok(processed) => {
                 progress.value.stage = "registering".into();
                 progress.publish(false);
@@ -269,6 +287,61 @@ fn register_file(
     Ok(())
 }
 
+/// Valida um chunk já armazenado antes de reutilizá-lo.
+fn validate_reusable_chunk(
+    conn: &rusqlite::Connection,
+    physical_path: &Path,
+    hash_id: &str,
+    key: &[u8; 32],
+) -> Result<()> {
+    match verify::validate_stored_chunk(physical_path, key, hash_id) {
+        Ok(true) => {
+            // Um chunk que fora marcado como corrompido e agora foi validado
+            // tem o diagnóstico limpo, como no scrubbing.
+            clear_chunk_corruption(conn, hash_id)?;
+            Ok(())
+        }
+        Ok(false) => {
+            let reason = format!(
+                "hash BLAKE3 recalculado não confere para o chunk armazenado {}",
+                hash_id
+            );
+            record_chunk_corruption(conn, hash_id, &reason)?;
+            anyhow::bail!(
+                "Chunk armazenado {} está corrompido: o hash BLAKE3 recalculado não confere; ele não será reutilizado",
+                hash_id
+            )
+        }
+        Err(error) => {
+            let reason = format!("chunk armazenado não pôde ser validado: {:#}", error);
+            record_chunk_corruption(conn, hash_id, &reason)?;
+            Err(error).with_context(|| {
+                format!(
+                    "Chunk armazenado {} não pôde ser validado e não será reutilizado",
+                    hash_id
+                )
+            })
+        }
+    }
+}
+
+/// Registra a corrupção quando o chunk já possui metadados no banco.
+///
+/// Um arquivo físico pode existir sem linha em `chunks` após um encerramento
+/// inesperado; nesse caso não há diagnóstico a atualizar, mas o chunk ainda
+/// precisa ser rejeitado.
+fn record_chunk_corruption(conn: &rusqlite::Connection, hash_id: &str, reason: &str) -> Result<()> {
+    if get_chunk(conn, hash_id)?.is_some() {
+        mark_chunk_corrupted(conn, hash_id, reason).with_context(|| {
+            format!(
+                "Falha ao registrar corrupção do chunk {} ({})",
+                hash_id, reason
+            )
+        })?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn process_file(
     conn: &rusqlite::Connection,
@@ -278,6 +351,7 @@ fn process_file(
     settings: &Settings,
     key: &[u8; 32],
     progress: &mut crate::status::ProgressWriter,
+    validated_chunks: &mut HashSet<String>,
 ) -> Result<ProcessedFile> {
     let relative_path = relative_path_for_metadata(source, path)?;
     let file = File::open(path)
@@ -309,6 +383,11 @@ fn process_file(
         let physical_path = chunk_path(repo_root, &hash_id)?;
         let already_stored = physical_path.is_file();
 
+        if already_stored && !validated_chunks.contains(&hash_id) {
+            validate_reusable_chunk(conn, &physical_path, &hash_id, key)?;
+            validated_chunks.insert(hash_id.clone());
+        }
+
         let compressed_size = if already_stored {
             chunks_reused += 1;
             get_chunk(conn, &hash_id)?.and_then(|info| {
@@ -320,6 +399,9 @@ fn process_file(
             let encrypted = crypto::try_encrypt(&compressed, key)?;
             write::atomic_write(&encrypted, &physical_path)
                 .with_context(|| format!("Falha ao gravar chunk {}", hash_id))?;
+            // O conteúdo foi lido e cifrado nesta execução; não há necessidade
+            // de reler o arquivo recém-gravado se ele reaparecer no backup.
+            validated_chunks.insert(hash_id.clone());
             chunks_new += 1;
             Some(encrypted.len() as u64)
         };

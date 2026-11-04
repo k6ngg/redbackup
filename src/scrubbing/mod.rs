@@ -8,12 +8,11 @@ use crate::metadata::migrations::run_migrations;
 use crate::metadata::repository::{
     clear_chunk_corruption, connect_or_create, list_chunk_hashes, mark_chunk_corrupted,
 };
-use crate::pipeline::{compress, crypto, hash};
+use crate::pipeline::verify::validate_stored_chunk;
 use crate::repository::lock::RepositoryLock;
 use crate::repository::{chunk_path, index_db_path};
 use anyhow::{Context, Result};
 use rand::seq::SliceRandom;
-use std::fs;
 use std::path::Path;
 
 #[derive(Debug, Clone, Default)]
@@ -29,17 +28,11 @@ pub struct ScrubProblem {
 }
 
 /// Verifica um chunk isolado.
+///
+/// Delega ao pipeline para que backup, scrubbing e demais fluxos compartilhem a
+/// mesma validação de autenticação, descompressão e hash.
 pub fn scrub_chunk(chunk_path: &Path, key: &[u8; 32], expected_hash: &str) -> Result<bool> {
-    let encrypted_data = fs::read(chunk_path).with_context(|| {
-        format!(
-            "Falha ao ler chunk para scrubbing: {}",
-            chunk_path.display()
-        )
-    })?;
-    let decrypted = crypto::decrypt(&encrypted_data, key)?;
-    let decompressed = compress::try_decompress(&decrypted)?;
-    let recalculated = hash::hash_bytes(&decompressed);
-    Ok(recalculated == expected_hash)
+    validate_stored_chunk(chunk_path, key, expected_hash)
 }
 
 /// Verifica todos os chunks (ou uma amostra aleatória) do repositório.

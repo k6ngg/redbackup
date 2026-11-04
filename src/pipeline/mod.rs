@@ -5,7 +5,7 @@
 //! 2. Ler com tratamento de arquivos inacessíveis/alterados/em uso.
 //! 3. Dividir com FastCDC (configurável).
 //! 4. Calcular BLAKE3.
-//! 5. Consultar índice SQLite (deduplicação).
+//! 5. Consultar índice SQLite e validar o chunk existente antes da deduplicação.
 //! 6. Comprimir com Zstandard (novos chunks).
 //! 7. Criptografar com AES-256-GCM (nonce único por operação).
 //! 8. Gravar com estratégia segura (arquivo temporário + rename atômico).
@@ -16,4 +16,5 @@ pub mod compress;
 pub mod crypto;
 pub mod hash;
 pub mod reader;
+pub mod verify;
 pub mod write;

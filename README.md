@@ -8,7 +8,7 @@ Mecanismo de backup desenvolvido em Rust. Cria e restaura snapshots de arquivos 
 
 ### 1. Visão Geral
 
-O `redbackup` grava snapshots de um diretório de origem em um repositório de destino. Cada arquivo é dividido em chunks definidos pelo conteúdo; chunks já existentes são reutilizados por hash, sem recomprimir nem recriptografar. Os metadados ficam em SQLite e permitem listar snapshots, listar arquivos, restaurar um arquivo específico, verificar integridade e aplicar retenção.
+O `redbackup` grava snapshots de um diretório de origem em um repositório de destino. Cada arquivo é dividido em chunks definidos pelo conteúdo; chunks já existentes são reutilizados por hash, sem recomprimir nem recriptografar, mas somente depois de autenticados, descomprimidos e terem o BLAKE3 recalculado. Os metadados ficam em SQLite e permitem listar snapshots, listar arquivos, restaurar um arquivo específico, verificar integridade e aplicar retenção.
 
 O motor funciona localmente pela CLI e também pode ser exposto por um daemon local via Unix socket. A CLI usa o daemon quando ele está disponível para `backup` e executa a mesma engine localmente quando não está.
 
@@ -152,7 +152,7 @@ Gera 32 bytes aleatórios, recusa sobrescrever um arquivo existente e aplica per
 redbackup backup [--repo <repositório>] [--key-file <chave>] [--manual] [--no-daemon]
 ```
 
-Percorre a origem recursivamente, processa cada arquivo em fluxo, grava chunks novos de forma atômica e registra o snapshot. Arquivos com erro são reportados individualmente; o snapshot só recebe status `completed` se todos os arquivos e a verificação final de integridade passarem. Caso contrário, recebe `failed`, mas os dados já gravados permanecem recuperáveis.
+Percorre a origem recursivamente, processa cada arquivo em fluxo, grava chunks novos de forma atômica e registra o snapshot. Antes de reutilizar um chunk existente, o backup o autentica, descomprime e recalcula seu BLAKE3; se a validação falhar, o chunk não é reutilizado, a corrupção é registrada em `chunks` e o arquivo falha. Arquivos com erro são reportados individualmente; o snapshot só recebe status `completed` se todos os arquivos e a verificação final de integridade passarem. Caso contrário, recebe `failed`, mas os dados já gravados permanecem recuperáveis.
 
 Se o conteúdo da origem for idêntico ao do último snapshot concluído, o snapshot em andamento é descartado e o resultado é `unchanged`: nenhum registro redundante é publicado. A comparação usa caminhos, tamanhos, permissões e a sequência de hashes de chunks; alterações apenas de `mtime` não geram um novo snapshot.
 
@@ -263,7 +263,8 @@ O banco usa `foreign_keys = ON`, `journal_mode = WAL`, `synchronous = FULL` e `b
 
 ### 7. Integridade e Recuperação
 
-- O pipeline é: arquivo → chunk FastCDC → BLAKE3 → consulta de deduplicação → `zstd` → AES-256-GCM → temporário + rename atômico → metadados em transação → verificação final → snapshot `completed`.
+- O pipeline é: arquivo → chunk FastCDC → BLAKE3 → consulta de deduplicação → validação do chunk existente → `zstd` → AES-256-GCM → temporário + rename atômico → metadados em transação → verificação final → snapshot `completed`.
+- Um chunk só é considerado reutilizável depois de lido, autenticado com AES-GCM, descomprimido e ter o BLAKE3 recalculado. A presença do arquivo no disco não basta; corrupção detectada no backup é registrada em `chunks` e torna o snapshot `failed`.
 - Chunks são gravados antes de qualquer metadado que os referencie. Um chunk só passa a ser referenciado dentro de uma transação SQLite curta.
 - `reference_count` é o número de linhas em `file_chunks`; o `prune` recalcula esse valor a partir da fonte de verdade em vez de confiar em decrementos cegos.
 - Arquivos alterados durante a leitura (tamanho ou `mtime`) são rejeitados para evitar metadados inconsistentes.
@@ -347,7 +348,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-Os testes incluem integração ponta a ponta com backup, deduplicação, restauração byte a byte, arquivos vazios, nomes Unicode, permissões/`mtime`, pruning, scrubbing com corrupção e recuperação de snapshots interrompidos.
+Os testes incluem integração ponta a ponta com backup, deduplicação, restauração byte a byte, arquivos vazios, nomes Unicode, permissões/`mtime`, pruning, scrubbing com corrupção, rejeição de chunks corrompidos na deduplicação e recuperação de snapshots interrompidos.
 
 ## Decisões Técnicas Documentadas
 
