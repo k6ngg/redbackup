@@ -389,6 +389,11 @@ fn process_file(
 
         if already_stored && !validated_chunks.contains(&hash_id) {
             validate_reusable_chunk(conn, &physical_path, &hash_id, key)?;
+            // Pode ser um chunk publicado por uma tentativa anterior cujo
+            // fsync de diretório falhou. Validar o conteúdo não confirma sua
+            // durabilidade; sincronize antes de registrar novas referências.
+            write::sync_existing_file(&physical_path)
+                .with_context(|| format!("Falha ao sincronizar chunk reutilizado {}", hash_id))?;
             validated_chunks.insert(hash_id.clone());
         }
 

@@ -268,6 +268,7 @@ O banco usa `foreign_keys = ON`, `journal_mode = WAL`, `synchronous = FULL` e `b
 - O pipeline é: arquivo → chunk FastCDC → BLAKE3 → consulta de deduplicação → validação do chunk existente → `zstd` → AES-256-GCM → temporário + rename atômico → metadados em transação → verificação final → snapshot `completed`.
 - Um chunk só é considerado reutilizável depois de lido, autenticado com AES-GCM, descomprimido e ter o BLAKE3 recalculado. A presença do arquivo no disco não basta; corrupção detectada no backup é registrada em `chunks` e torna o snapshot `failed`.
 - Chunks são gravados antes de qualquer metadado que os referencie. Um chunk só passa a ser referenciado dentro de uma transação SQLite curta.
+- Em Unix, a publicação sincroniza o arquivo e os diretórios ancestrais; falhas de abertura ou sincronização impedem a conclusão do backup. Um chunk que permaneça no disco após uma falha é sincronizado novamente antes de ser reutilizado. Em plataformas não Unix, a biblioteca padrão não confirma a durabilidade do rename de diretório após queda de energia.
 - `reference_count` é o número de linhas em `file_chunks`; o `prune` recalcula esse valor a partir da fonte de verdade em vez de confiar em decrementos cegos.
 - Arquivos alterados durante a leitura (tamanho ou `mtime`) são rejeitados para evitar metadados inconsistentes.
 - `recover` remove apenas `.tmp_*` e chunks sem referência; nunca apaga um chunk referenciado.
