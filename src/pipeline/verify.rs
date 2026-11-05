@@ -39,18 +39,24 @@ pub fn validated_chunk_size(
             chunk_path.display()
         )
     })?;
-    let decrypted = crypto::decrypt(&encrypted_data, key).with_context(|| {
+    validated_chunk_bytes(&encrypted_data, key, expected_hash).with_context(|| {
         format!(
-            "Falha ao autenticar/descriptografar chunk armazenado: {}",
+            "Falha ao validar chunk armazenado: {}",
             chunk_path.display()
         )
-    })?;
-    let decompressed = compress::try_decompress(&decrypted).with_context(|| {
-        format!(
-            "Falha ao descomprimir chunk armazenado: {}",
-            chunk_path.display()
-        )
-    })?;
+    })
+}
+
+/// Valida exatamente os bytes que serão publicados, evitando reler a fonte.
+pub fn validated_chunk_bytes(
+    encrypted_data: &[u8],
+    key: &[u8; 32],
+    expected_hash: &str,
+) -> Result<Option<u64>> {
+    let decrypted = crypto::decrypt(encrypted_data, key)
+        .context("Falha ao autenticar/descriptografar chunk")?;
+    let decompressed =
+        compress::try_decompress(&decrypted).context("Falha ao descomprimir chunk")?;
     let recalculated = hash::hash_bytes(&decompressed);
     Ok((recalculated == expected_hash).then_some(decompressed.len() as u64))
 }

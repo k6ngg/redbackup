@@ -164,7 +164,7 @@ pub fn configure(root: &Path, settings: &Settings, destination: &Path, mode: Mod
     Ok(())
 }
 
-fn validate_destination(root: &Path, config: &Config) -> Result<()> {
+pub(crate) fn validate_destination(root: &Path, config: &Config) -> Result<()> {
     let dest = config
         .destination
         .canonicalize()

@@ -651,14 +651,30 @@ pub fn cmd_recover(repo: Option<&str>, key_file: Option<&str>) -> i32 {
     match recovery::recover_repository(&root, &key) {
         Ok(report) => {
             println!(
-                "Recuperação concluída: {} arquivo(s) removido(s), {} snapshot(s) marcado(s) como falho(s).",
+                "Recuperação executada: {} arquivo(s) removido(s), {} snapshot(s) marcado(s) como falho(s).",
                 report.removed.len(),
                 report.stale_snapshots_failed
             );
             for removed in &report.removed {
                 println!("  removido: {}", removed);
             }
-            0
+            for chunk in &report.repaired {
+                println!("  chunk reparado: {}", chunk.hash);
+                if let Some(path) = &chunk.preserved_original {
+                    println!("    original preservado: {}", path.display());
+                }
+            }
+            for problem in &report.unrecoverable {
+                eprintln!(
+                    "CHUNK NÃO RECUPERÁVEL [{}]: {}",
+                    problem.hash, problem.reason
+                );
+            }
+            if report.unrecoverable.is_empty() {
+                0
+            } else {
+                4
+            }
         }
         Err(error) => {
             eprintln!(
