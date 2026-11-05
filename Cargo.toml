@@ -1,10 +1,11 @@
 [package]
 name = "redbackup"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 default-run = "redbackup"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
 # Fundamental crates conforme AGENTS.md e technical_specifications.md
 rusqlite = "0.31"
 notify = "6.1"

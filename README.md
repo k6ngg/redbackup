@@ -121,6 +121,26 @@ O repositório pode ser indicado de três formas, nesta ordem de precedência:
 
 ### 4. Comandos
 
+A CLI usa `clap` para validação de argumentos e ajuda específica por comando:
+
+```bash
+redbackup --help
+redbackup restore --help
+redbackup repository add --help
+redbackup help backup
+```
+
+As descrições são em português; alguns rótulos e diagnósticos nativos do
+`clap` permanecem em inglês. Cores são automáticas em terminais. Erros de
+argumentos retornam **1**, enquanto ajuda e versão retornam **0**.
+`version`, `--version` e `-V` continuam disponíveis.
+
+Opções com valor aceitam `--repo caminho` ou `--repo=caminho`. Opções
+duplicadas e valores em flags booleanas (como `--force=true`) são rejeitados.
+Dias, segundos e quantidades exigem inteiros sem sufixos; sufixos de tamanho
+continuam disponíveis somente em `--min-chunk` e `--max-chunk`.
+`--manual` continua aceito por compatibilidade, sem efeito adicional.
+
 #### `init`
 
 ```bash
