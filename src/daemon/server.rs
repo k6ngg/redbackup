@@ -224,6 +224,7 @@ fn handle_connection(
                     "chunks_reused": report.chunks_reused,
                     "errors": report.errors,
                     "redundancy": report.redundancy,
+                    "metadata_backup": report.metadata_backup,
                 });
                 (
                     Response {

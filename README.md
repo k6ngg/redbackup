@@ -145,7 +145,7 @@ continuam disponíveis somente em `--min-chunk` e `--max-chunk`.
 
 ```bash
 redbackup init --source <origem> --dest <repositório> --key-file <arquivo> \
-  [--retention-days N] [--min-chunk N] [--max-chunk N]
+  [--retention-days N] [--min-chunk N] [--max-chunk N] [--metadata-backup <diretório-vazio>]
 ```
 
 - `--source`: diretório existente a ser salvo (obrigatório).
@@ -153,6 +153,7 @@ redbackup init --source <origem> --dest <repositório> --key-file <arquivo> \
 - `--key-file`: arquivo da chave (obrigatório). Se não existir, uma chave aleatória de 32 bytes é gerada com permissão `0600`. Diretórios, arquivos com formato inválido e caminhos sem permissão são recusados.
 - `--retention-days`: dias mínimos antes de um snapshot poder ser removido pelo `prune` (padrão `30`).
 - `--min-chunk` / `--max-chunk`: limites do FastCDC. Aceitam bytes ou sufixos `KiB`, `MiB`, `KB`, `MB`, `GB`. O mínimo deve ficar entre 64 bytes e 1 MiB; o máximo, entre 1 KiB e 16 MiB.
+- `--metadata-backup`: diretório independente existente e vazio para a cópia de metadados (opcional; os backups seguintes a atualizam automaticamente).
 
 `init` é idempotente para a estrutura do repositório: não apaga chunks nem metadados existentes. Ele recusa repositórios fisicamente inconsistentes, por exemplo `metadata/index.db` sem `data/` ou `data/` com arquivos sem banco. Um destino não vazio que não pareça um repositório redbackup também é recusado, para não misturar o repositório com dados do usuário (como uma pasta de imagens); use um diretório vazio ou dedicado. A chave é validada antes da criação da estrutura do repositório, evitando efeitos colaterais quando o arquivo de chave é inválido. `init` também vincula a chave ao repositório; repetir o comando com uma chave diferente é recusado sem alterar `settings.json` nem os dados existentes.
 
@@ -176,7 +177,7 @@ Percorre a origem recursivamente, processa cada arquivo em fluxo, grava chunks n
 
 Se o conteúdo da origem for idêntico ao do último snapshot concluído, o snapshot em andamento é descartado e o resultado é `unchanged`: nenhum registro redundante é publicado. A comparação usa caminhos, tamanhos, permissões e a sequência de hashes de chunks; alterações apenas de `mtime` não geram um novo snapshot.
 
-`--manual` é aceito por compatibilidade e não altera o comportamento. `--no-daemon` força a execução local mesmo que exista um daemon no repositório.
+`--manual` é aceito por compatibilidade e não altera o comportamento. `--no-daemon` força a execução local mesmo que exista um daemon no repositório. Se a cópia de metadados estiver configurada, ela é atualizada após um snapshot concluído; a falha dela não invalida o backup e é reportada separadamente (ver cópia de metadados).
 
 #### `restore`
 
@@ -203,10 +204,12 @@ Listam, respectivamente, snapshots (ID, data, status, arquivos, bytes e origem) 
 #### `prune`
 
 ```bash
-redbackup prune --force [--days N] [--repo <repositório>]
+redbackup prune --force [--days N] [--repo <repositório>] [--allow-protected]
 ```
 
 Comando destrutivo: exige `--force`. Remove snapshots `completed`/`failed` mais antigos que `--days` (ou `retention_days` da configuração), em uma transação, e recalcula `reference_count` a partir de `file_chunks`. Só depois remove arquivos físicos de chunks sem nenhuma referência. Se houver snapshot `in-progress`, a remoção de chunks é adiada para não competir com um backup ativo.
+
+Snapshots protegidos pela cópia de metadados (ver seção abaixo) são mantidos e reportados, nunca removidos silenciosamente. Use `--allow-protected` apenas quando aceitar perder a cobertura declarada: o comando avisa, atualiza o estado local e a cópia passa a `stale` até ser atualizada com `metadata-backup`.
 
 #### `scrub`
 
@@ -243,7 +246,57 @@ O `status` apresenta `disabled`, `pending`, `protected`, `degraded` ou `unavaila
 
 As cópias são arquivos cifrados com a mesma chave e são autenticadas, descomprimidas e verificadas por tamanho e BLAKE3. Uma cópia já existente mas inválida não é sobrescrita; ela é preservada para diagnóstico e a sincronização falha. Nenhum `prune` remove cópias redundantes nesta versão, portanto o espaço ocupado pode crescer. A configuração não pode ser substituída automaticamente. Uma interrupção durante a configuração inicial pode deixar o marcador de identificação no destino antes da configuração ser salva; nesse caso, examine o diretório antes de qualquer limpeza manual.
 
-**Limites:** a redundância guarda chunks, não uma cópia independente de `metadata/index.db` ou da configuração. Guarde separadamente um backup consistente dos metadados e da chave. O comando `recover` pode usar a redundância configurada para reparar chunks, mas não recria dados que não estejam disponíveis. No Windows, a durabilidade do rename após queda de energia não é garantida. A sincronização percorre e verifica todos os chunks referenciados pelos snapshots concluídos, podendo ser demorada.
+**Limites:** a redundância guarda chunks, não uma cópia independente de `metadata/index.db` ou da configuração. Guarde separadamente um backup consistente dos metadados e da chave (seção abaixo). O comando `recover` pode usar a redundância configurada para reparar chunks, mas não recria dados que não estejam disponíveis. No Windows, a durabilidade do rename após queda de energia não é garantida. A sincronização percorre e verifica todos os chunks referenciados pelos snapshots concluídos, podendo ser demorada.
+
+#### Cópia independente de metadados
+
+A cópia de metadados protege `metadata/index.db` (snapshots, caminhos, tamanhos, permissões, `mtime` e a ordem dos chunks em `file_chunks`), sem a qual os chunks em `data/` não podem ser restaurados. A redundância de chunks não substitui esta cópia, e `recover` não recria um banco perdido.
+
+Configure uma vez o destino — um diretório existente e vazio, preferencialmente em outro dispositivo — no `init` ou em um comando dedicado:
+
+```bash
+redbackup init --source <origem> --dest <repositório> --key-file <chave> \
+  --metadata-backup <diretório-vazio>        # configuração opcional no init
+redbackup metadata-backup-configure --repo <repositório> --dest <diretório-vazio>  # repositório existente
+redbackup backup --repo <repositório>        # atualiza a cópia automaticamente
+redbackup metadata-backup [--repo <repositório>] [--dest <diretório-vazio>]  # cria/renova agora
+redbackup metadata-verify --from <diretório-da-cópia> [--repo <repositório>]
+```
+
+O destino fica registrado em `config/settings.json` (`metadata_backup_path`). `metadata-backup --dest` configura (se ainda não configurado) e cria a cópia na mesma chamada. Sobreposições com o repositório ou com a origem são recusadas, e em Unix há um aviso quando destino e repositório aparentam estar no mesmo dispositivo; isso não detecta todos os domínios de falha compartilhados (mesmo volume, mesmo hardware, ransomware). O diretório usa `0700` e os arquivos `0600` em Unix, porque o banco expõe caminhos e metadados mesmo sem conter a chave.
+
+A cópia é criada com a API de backup do SQLite (`sqlite3_backup` via `rusqlite`), sob lock exclusivo do repositório. Ela inclui transações confirmadas ainda no WAL; copiar `index.db` com `cp` em modo WAL não é equivalente e não é feito. O resultado no destino é:
+
+```text
+<destino>/
+├── index.db                        # cópia consistente, sem -wal/-shm
+└── redbackup-metadata.json         # manifesto (sem segredos)
+```
+
+A gravação usa temporário no mesmo sistema de arquivos, sincronização e rename atômico. O manifesto é publicado por último como ponto de confirmação, com versão do formato, versão do esquema, verificador da chave (o mesmo BLAKE3 keyed já persistido no banco), hash BLAKE3 e tamanho do `index.db`, contagem de chunks/arquivos e a lista de snapshots `completed` cobertos, além de um retrato sanitizado da configuração (caminhos históricos e parâmetros de chunking). **A chave nunca entra na cópia, no manifesto ou em logs.** Guarde a chave original separadamente do repositório e da cópia; sem ela, os chunks não podem ser restaurados. Interrupção ou erro não publica cópia parcial nem inutiliza a última cópia válida; se a publicação for interrompida entre o banco e o manifesto, o hash diverge e a cópia é recusada na verificação.
+
+A cobertura refere-se apenas aos snapshots concluídos no momento da cópia. Snapshots posteriores não estão protegidos por ela: `status` informa `stale` nesse caso, e `metadata-verify --repo` lista os snapshots não cobertos. Antes de publicar, a criação confere que todos os chunks dos snapshots cobertos existem no disco; snapshots incompletos impedem a publicação.
+
+**Atualização automática:** após publicar um snapshot `completed` (ou `unchanged`), o próprio `backup` — inclusive via daemon e watcher — atualiza a cópia no mesmo lock exclusivo. A falha da cópia nunca invalida um snapshot principal íntegro: o backup conclui, informa o aviso (`Cópia de metadados: stale` com o detalhe) e preserva a última cópia válida; novos snapshots seguem sem proteção até a próxima execução bem-sucedida. Use `metadata-backup` para criar a primeira cópia, renovar após pruning ou corrigir uma falha, e `metadata-verify` para auditar hash, integridade e cobertura. A política de retenção das cópias é manual: cópias antigas no mesmo destino são substituídas atomicamente pela nova; mantenha cópias históricas em diretórios distintos se precisar delas.
+
+O `status` apresenta `disabled`, `pending`, `protected`, `stale` ou `unavailable` para a cópia de metadados. `protected` significa que a última cópia foi validada e cobre todos os snapshots concluídos atuais; não garante que o destino permaneceu íntegro desde então. `metadata-verify` revalida hash, `integrity_check`, chaves estrangeiras, schema e cobertura.
+
+Para restaurar após perda ou corrupção do banco:
+
+```bash
+redbackup metadata-restore --from <diretório-da-cópia> [--repo <repositório>] [--key-file <chave>] [--force]
+```
+
+Sob lock exclusivo, o comando valida manifesto, hash, integridade, schema e cobertura antes de qualquer alteração, recusa cópia incompatível ou de outro repositório (verificador de chave diferente) e exige `--force` explícito para substituir um banco existente, preservado em `metadata/quarantine/index-<unix>.db` para diagnóstico. Com a chave (arquivo configurado ou `--key-file`), ela é validada antes da instalação e cada chunk é autenticado, descomprimido e confrontado com o BLAKE3 depois. A restauração verifica referências e disponibilidade dos chunks e informa snapshots incompletos **sem** declarar sucesso integral (código `4`); dados recuperáveis são preservados e `recover`/`scrub` podem ser usados a seguir.
+
+Para recuperar em outro diretório e em outra máquina:
+
+1. Restaure o índice em um diretório novo (`metadata-restore --from <cópia> --repo <novo-repositório>`). A estrutura `data/`, `metadata/` e `config/` é criada sem banco prévio.
+2. Copie os chunks de `data/` (do repositório original ou da redundância) para `<novo-repositório>/data/`.
+3. Reconfigure caminhos com `init --source <nova-origem> --dest <novo-repositório> --key-file <chave-original>`. Nunca confie cegamente nos caminhos antigos do manifesto; `init` grava `settings.json` novo e vincula a chave original.
+4. Restaure os arquivos e confira byte a byte; permissões e `mtime` registrados são preservados quando suportados.
+
+Comportamento diante de falhas: destino indisponível ou erro de escrita falha sem tocar a última cópia válida; cópia truncada/corrompida é recusada pelo hash ou pelo `integrity_check`; chave incorreta é recusada antes de qualquer alteração; chunks ausentes/corrompidos são reportados por snapshot sem falso sucesso. No Windows, a durabilidade do rename após queda de energia não é garantida. Reconstruir nomes de arquivos, snapshots e ordem de chunks exclusivamente a partir de `data/` não é suportado, nem recuperar uma chave original perdida.
 
 #### `daemon`
 
@@ -350,6 +403,7 @@ Um crate único (`redbackup`) com módulos internos tratados como futuras crates
 - `retention/`: pruning e remoção de chunks órfãos.
 - `scrubbing/`: verificação de integridade e diagnóstico persistido.
 - `recovery/`: recuperação após interrupção.
+- `metadata_backup/`: cópia independente e consistente do SQLite, manifesto e restauração do índice.
 - `daemon/`: protocolo, cliente, servidor IPC, watcher e fila de eventos.
 - `cli/`: parsing de argumentos e comandos.
 
@@ -363,6 +417,7 @@ Um crate único (`redbackup`) com módulos internos tratados como futuras crates
 | Restauração com validação e metadados | ✅ Implementado |
 | Pruning e recuperação | ✅ Implementado |
 | Scrubbing com diagnóstico persistido | ✅ Implementado |
+| Cópia independente e restauração de metadados | ✅ Implementado |
 | CLI completa | ✅ Implementado |
 | Daemon IPC e watcher (Unix) | ✅ Implementado |
 | Daemon IPC no Windows | ❌ Não implementado |
@@ -393,7 +448,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-Os testes incluem integração ponta a ponta com backup, deduplicação, restauração byte a byte, arquivos vazios, nomes Unicode, permissões/`mtime`, pruning, scrubbing com corrupção, rejeição de chunks corrompidos na deduplicação, vinculação e recusa de chaves incompatíveis e recuperação de snapshots interrompidos.
+Os testes incluem integração ponta a ponta com backup, deduplicação, restauração byte a byte, arquivos vazios, nomes Unicode, permissões/`mtime`, pruning, scrubbing com corrupção, rejeição de chunks corrompidos na deduplicação, vinculação e recusa de chaves incompatíveis, recuperação de snapshots interrompidos e cópia independente de metadados (perda do banco, consistência em WAL, interrupção antes da publicação, cópia corrompida, cobertura desatualizada, chunks ausentes, chave incorreta, pruning de snapshots protegidos e restauração em novo diretório).
 
 ## Decisões Técnicas Documentadas
 

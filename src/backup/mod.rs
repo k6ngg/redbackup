@@ -52,6 +52,8 @@ pub struct BackupReport {
     pub status: String,
     #[serde(default)]
     pub redundancy: Option<crate::redundancy::State>,
+    #[serde(default)]
+    pub metadata_backup: Option<crate::metadata_backup::Observed>,
 }
 
 struct WalkResult {
@@ -193,6 +195,12 @@ pub fn run_backup(repo_root: &Path, settings: &Settings, key: &[u8; 32]) -> Resu
                             discard_snapshot(&mut conn, snapshot_id)?;
                             report.status = "unchanged".to_string();
                             report.snapshot_id = previous;
+                            if settings.metadata_backup_path.is_some() {
+                                report.metadata_backup =
+                                    Some(crate::metadata_backup::update_after_backup_locked(
+                                        &root, settings,
+                                    ));
+                            }
                             return Ok(report);
                         }
                     }
@@ -214,6 +222,15 @@ pub fn run_backup(repo_root: &Path, settings: &Settings, key: &[u8; 32]) -> Resu
                 crate::crash_point("after_finalize");
                 report.status = status.to_string();
                 report.snapshot_id = snapshot_id;
+
+                // Atualiza a cópia de metadados somente após publicar o
+                // snapshot: a cópia cobre snapshots `completed`, nunca o
+                // `in-progress`. A falha da cópia não invalida o snapshot.
+                if status == "completed" && settings.metadata_backup_path.is_some() {
+                    report.metadata_backup = Some(
+                        crate::metadata_backup::update_after_backup_locked(&root, settings),
+                    );
+                }
 
                 Ok(report)
             }

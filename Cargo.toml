@@ -7,7 +7,7 @@ default-run = "redbackup"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 # Fundamental crates conforme AGENTS.md e technical_specifications.md
-rusqlite = "0.31"
+rusqlite = { version = "0.31", features = ["backup"] }
 notify = "6.1"
 fastcdc = "5.0"
 blake3 = "1.5"

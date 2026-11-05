@@ -30,6 +30,9 @@ pub struct Settings {
     pub chunk_max_size: u64,
     /// Dias mínimos de retenção antes de permitir o pruning de um snapshot.
     pub retention_days: u64,
+    /// Diretório independente com a cópia de metadados (sem a chave).
+    #[serde(default)]
+    pub metadata_backup_path: Option<String>,
 }
 
 impl Default for Settings {
@@ -41,6 +44,7 @@ impl Default for Settings {
             chunk_min_size: 1_048_576, // 1 MiB
             chunk_max_size: 4_194_304, // 4 MiB
             retention_days: 30,
+            metadata_backup_path: None,
         }
     }
 }

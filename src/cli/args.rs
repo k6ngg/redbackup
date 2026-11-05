@@ -69,6 +69,9 @@ pub(super) enum Command {
         /// Tamanho máximo FastCDC, até 16MiB (padrão: 4MiB)
         #[arg(long, value_parser = parse_size)]
         max_chunk: Option<u64>,
+        /// Destino independente da cópia de metadados (existente e vazio)
+        #[arg(long, value_name = "DIRETÓRIO")]
+        metadata_backup: Option<String>,
     },
     /// Gerar chave AES-256 sem sobrescrever arquivo existente
     Keygen {
@@ -124,6 +127,9 @@ pub(super) enum Command {
         days: Option<u64>,
         #[arg(long)]
         force: bool,
+        /// Permitir remover snapshots protegidos pela cópia de metadados
+        #[arg(long)]
+        allow_protected: bool,
     },
     /// Verificar autenticação e hash dos chunks
     Scrub {
@@ -145,6 +151,40 @@ pub(super) enum Command {
     },
     /// Sincronizar e verificar cópias redundantes
     RedundancySync(KeyRepository),
+    /// Configurar destino independente da cópia de metadados
+    MetadataBackupConfigure {
+        #[command(flatten)]
+        repository: Repository,
+        #[arg(long)]
+        dest: String,
+    },
+    /// Criar cópia consistente dos metadados no destino configurado
+    MetadataBackup {
+        #[command(flatten)]
+        repository: Repository,
+        /// Destino alternativo (deve coincidir com o configurado)
+        #[arg(long)]
+        dest: Option<String>,
+    },
+    /// Verificar cópia de metadados e cobertura
+    MetadataVerify {
+        /// Diretório da cópia de metadados
+        #[arg(long)]
+        from: String,
+        #[command(flatten)]
+        repository: Repository,
+    },
+    /// Restaurar metadados a partir da cópia independente
+    MetadataRestore {
+        /// Diretório da cópia de metadados
+        #[arg(long)]
+        from: String,
+        #[command(flatten)]
+        repository: KeyRepository,
+        /// Substituir banco existente (preservado em metadata/quarantine/)
+        #[arg(long)]
+        force: bool,
+    },
     /// Iniciar daemon IPC ou supervisor multi-repositório
     Daemon(KeyRepository),
     /// Monitorar origem e executar backups após alterações

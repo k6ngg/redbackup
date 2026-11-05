@@ -7,6 +7,7 @@ pub mod cli;
 pub mod config;
 pub mod daemon;
 pub mod metadata;
+pub mod metadata_backup;
 pub mod pipeline;
 pub mod recovery;
 pub mod redundancy;

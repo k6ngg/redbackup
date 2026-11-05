@@ -25,26 +25,77 @@ pub struct PruneReport {
     pub bytes_freed: u64,
     pub deferred: bool,
     pub errors: Vec<String>,
+    /// Snapshots expirados protegidos pela cópia de metadados e mantidos.
+    pub protected_skipped: Vec<i64>,
+    /// Snapshots protegidos removidos com autorização explícita.
+    pub protected_removed: Vec<i64>,
 }
 
 /// Executa retenção e limpeza de chunks órfãos para um repositório.
+///
+/// Snapshots protegidos pela cópia de metadados não são removidos.
 pub fn prune_repository(repo_root: &Path, retention_days: u64) -> Result<PruneReport> {
+    prune_repository_with_options(repo_root, retention_days, false)
+}
+
+/// Executa retenção com opção explícita de permitir remover snapshots
+/// protegidos pela cópia de metadados. A remoção é registrada no estado
+/// local e a cópia fica marcada como precisando de atualização — nunca
+/// silenciosamente.
+pub fn prune_repository_with_options(
+    repo_root: &Path,
+    retention_days: u64,
+    allow_protected: bool,
+) -> Result<PruneReport> {
     let _lock = RepositoryLock::exclusive(repo_root)?;
+    let protected = crate::metadata_backup::protected_snapshot_ids(repo_root)?;
+    let excluded: std::collections::HashSet<i64> = if allow_protected {
+        std::collections::HashSet::new()
+    } else {
+        protected
+    };
     let db_path = index_db_path(repo_root);
     let mut conn = connect_or_create(
         db_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Caminho do banco não é UTF-8"))?,
     )?;
-    let snapshots_removed = prune_expired_conn(&mut conn, retention_days)?;
-    let (removed_hashes, bytes_freed, deferred, errors) =
+    let (snapshots_removed, skipped) =
+        prune_expired_conn_filtered(&mut conn, retention_days, &excluded)?;
+    let (removed_hashes, bytes_freed, deferred, mut errors) =
         remove_unreferenced_conn(&conn, repo_root)?;
+    let mut protected_removed = Vec::new();
+    if allow_protected {
+        let all_protected = crate::metadata_backup::protected_snapshot_ids(repo_root)?;
+        // IDs que eram protegidos e não estão mais no banco foram removidos.
+        for id in all_protected {
+            let still_exists: i64 =
+                conn.query_row("SELECT COUNT(*) FROM snapshots WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })?;
+            if still_exists == 0 {
+                protected_removed.push(id);
+            }
+        }
+        if !protected_removed.is_empty() {
+            if let Err(error) =
+                crate::metadata_backup::record_pruned_protected(repo_root, &protected_removed)
+            {
+                errors.push(format!(
+                    "Falha ao atualizar estado da cópia de metadados após pruning: {:#}",
+                    error
+                ));
+            }
+        }
+    }
     Ok(PruneReport {
         snapshots_removed,
         chunks_removed: removed_hashes.len(),
         bytes_freed,
         deferred,
         errors,
+        protected_skipped: skipped,
+        protected_removed,
     })
 }
 
@@ -66,6 +117,16 @@ pub fn prune_expired_snapshots(db_path: &str, retention_days: u64) -> Result<()>
 }
 
 fn prune_expired_conn(conn: &mut Connection, retention_days: u64) -> Result<usize> {
+    let (removed, _skipped) =
+        prune_expired_conn_filtered(conn, retention_days, &std::collections::HashSet::new())?;
+    Ok(removed)
+}
+
+fn prune_expired_conn_filtered(
+    conn: &mut Connection,
+    retention_days: u64,
+    excluded: &std::collections::HashSet<i64>,
+) -> Result<(usize, Vec<i64>)> {
     let tx = conn
         .transaction()
         .context("Falha ao abrir transação de pruning")?;
@@ -86,7 +147,12 @@ fn prune_expired_conn(conn: &mut Connection, retention_days: u64) -> Result<usiz
         ids
     };
 
+    let mut skipped = Vec::new();
     for snapshot_id in &snapshot_ids {
+        if excluded.contains(snapshot_id) {
+            skipped.push(*snapshot_id);
+            continue;
+        }
         tx.execute("DELETE FROM snapshots WHERE id = ?1", params![snapshot_id])?;
     }
 
@@ -94,7 +160,7 @@ fn prune_expired_conn(conn: &mut Connection, retention_days: u64) -> Result<usiz
     // ou incrementos duplicados por falhas parciais.
     recalculate_reference_counts(&tx)?;
     tx.commit().context("Falha ao confirmar pruning")?;
-    Ok(snapshot_ids.len())
+    Ok((snapshot_ids.len() - skipped.len(), skipped))
 }
 
 /// Remove arquivos físicos de chunks com `reference_count == 0`.

@@ -36,7 +36,7 @@ pub fn exit_with_code(code: i32, msg: &str) -> ! {
 
 /// Comando `init` — configura diretórios de origem/destino e chave.
 pub fn cmd_init(source: &str, destination: &str, key_file: Option<&str>) -> i32 {
-    cmd_init_full(source, destination, key_file, None, None, None)
+    cmd_init_full(source, destination, key_file, None, None, None, None)
 }
 
 pub fn cmd_init_full(
@@ -46,6 +46,7 @@ pub fn cmd_init_full(
     retention_days: Option<u64>,
     chunk_min: Option<u64>,
     chunk_max: Option<u64>,
+    metadata_backup: Option<&str>,
 ) -> i32 {
     if source.trim().is_empty() || destination.trim().is_empty() {
         eprintln!("ERRO [1]: Diretórios de origem e destino são obrigatórios.");
@@ -175,6 +176,22 @@ pub fn cmd_init_full(
         return 2;
     }
 
+    if let Some(dest_dir) = metadata_backup.filter(|v| !v.trim().is_empty()) {
+        if let Err(error) =
+            crate::metadata_backup::configure(&destination_path, Path::new(dest_dir))
+        {
+            eprintln!(
+                "ERRO [1]: Falha ao configurar a cópia de metadados: {:#}",
+                error
+            );
+            return 1;
+        }
+        println!(
+            "Cópia de metadados configurada em {} (atualizada após cada backup).",
+            dest_dir
+        );
+    }
+
     if let Err(error) = crate::config::registry::register(&destination_path) {
         eprintln!(
             "Repositório criado, mas cadastro automático falhou: {:#}. Use repository add.",
@@ -267,6 +284,18 @@ pub fn cmd_backup(repo: Option<&str>, key_file: Option<&str>, use_daemon: bool) 
                                 eprintln!("AVISO: redundância: {}", detail);
                             }
                         }
+                        if let Some(metadata_backup) =
+                            data.get("metadata_backup").filter(|v| !v.is_null())
+                        {
+                            println!(
+                                "Cópia de metadados: {} ({} snapshot(s) coberto(s))",
+                                metadata_backup["state"].as_str().unwrap_or("desconhecida"),
+                                metadata_backup["covered_snapshots"].as_u64().unwrap_or(0)
+                            );
+                            if let Some(detail) = metadata_backup["detail"].as_str() {
+                                eprintln!("AVISO: cópia de metadados: {}", detail);
+                            }
+                        }
                     }
                     return if response.is_ok() { 0 } else { 4 };
                 }
@@ -325,6 +354,15 @@ pub fn cmd_backup(repo: Option<&str>, key_file: Option<&str>, use_daemon: bool) 
                     eprintln!("AVISO: redundância: {}", detail);
                 }
             }
+            if let Some(metadata_backup) = &report.metadata_backup {
+                println!(
+                    "Cópia de metadados: {} ({} snapshot(s) coberto(s))",
+                    metadata_backup.state, metadata_backup.covered_snapshots
+                );
+                if let Some(detail) = &metadata_backup.detail {
+                    eprintln!("AVISO: cópia de metadados: {}", detail);
+                }
+            }
             if matches!(report.status.as_str(), "completed" | "unchanged") {
                 0
             } else {
@@ -380,6 +418,195 @@ pub fn cmd_redundancy_sync(repo: Option<&str>, key_file: Option<&str>) -> i32 {
                 error
             );
             4
+        }
+    }
+}
+
+pub fn cmd_metadata_backup_configure(repo: Option<&str>, dest: &str) -> i32 {
+    let result = (|| -> Result<()> {
+        let root = resolve_repository(repo)?;
+        crate::metadata_backup::configure(&root, Path::new(dest))
+    })();
+    match result {
+        Ok(()) => {
+            println!("Cópia de metadados configurada; os próximos backups a atualizarão automaticamente. Use metadata-backup para criar ou renovar a cópia agora.");
+            0
+        }
+        Err(error) => {
+            eprintln!("ERRO: falha ao configurar cópia de metadados: {:#}", error);
+            1
+        }
+    }
+}
+
+pub fn cmd_metadata_backup(repo: Option<&str>, dest: Option<&str>) -> i32 {
+    let result = (|| -> Result<crate::metadata_backup::Manifest> {
+        let root = resolve_repository(repo)?;
+        let settings = Settings::load(&root)?;
+        let destination = if let Some(path) = dest {
+            // Um único comando configura (se necessário) e cria a cópia.
+            let dest_path = PathBuf::from(path);
+            crate::metadata_backup::configure(&root, &dest_path)?;
+            dest_path
+        } else if let Some(path) = &settings.metadata_backup_path {
+            PathBuf::from(path)
+        } else {
+            anyhow::bail!("Cópia de metadados não configurada: use `init --metadata-backup <diretório-vazio>`, `metadata-backup-configure --dest <diretório-vazio>` ou `metadata-backup --dest <diretório-vazio>`");
+        };
+        crate::metadata_backup::create_backup(&root, &destination)
+    })();
+    match result {
+        Ok(manifest) => {
+            println!(
+                "Cópia de metadados criada: {} snapshot(s) protegido(s) (último: {}), schema {}, {} chunk(s).",
+                manifest.completed_snapshot_ids.len(),
+                manifest
+                    .last_completed_snapshot_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "nenhum".into()),
+                manifest.schema_version,
+                manifest.chunk_count
+            );
+            println!("Guarde a chave original separadamente; ela não faz parte da cópia.");
+            0
+        }
+        Err(error) => {
+            eprintln!(
+                "ERRO: cópia de metadados falhou (última cópia válida preservada): {:#}",
+                error
+            );
+            4
+        }
+    }
+}
+
+pub fn cmd_metadata_verify(from: &str, repo: Option<&str>) -> i32 {
+    let result = (|| -> Result<()> {
+        let report = crate::metadata_backup::verify_backup(Path::new(from))?;
+        println!(
+            "Cópia válida: formato {}, schema {}, {} snapshot(s) coberto(s) (último: {}), {} chunk(s), {} arquivo(s).",
+            report.manifest.format_version,
+            report.manifest.schema_version,
+            report.manifest.completed_snapshot_ids.len(),
+            report
+                .manifest
+                .last_completed_snapshot_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "nenhum".into()),
+            report.summary.chunk_count,
+            report.summary.file_count
+        );
+        if let Some(repo) = repo {
+            let root = resolve_repository(Some(repo))?;
+            let conn = open_database(&root)?;
+            let snapshots = list_snapshots(&conn)?;
+            let covered: std::collections::HashSet<i64> = report
+                .manifest
+                .completed_snapshot_ids
+                .iter()
+                .copied()
+                .collect();
+            let newer: Vec<i64> = snapshots
+                .iter()
+                .filter(|s| s.status == "completed" && !covered.contains(&s.id))
+                .map(|s| s.id)
+                .collect();
+            if newer.is_empty() {
+                println!("Nenhum snapshot concluído posterior à cópia.");
+            } else {
+                let ids: Vec<String> = newer.iter().map(|id| id.to_string()).collect();
+                println!(
+                    "Cópia desatualizada: snapshot(s) {} não está(ão) coberto(s). Execute metadata-backup.",
+                    ids.join(", ")
+                );
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!(
+                "ERRO: verificação da cópia de metadados falhou: {:#}",
+                error
+            );
+            4
+        }
+    }
+}
+
+pub fn cmd_metadata_restore(
+    from: &str,
+    repo: Option<&str>,
+    key_file: Option<&str>,
+    force: bool,
+) -> i32 {
+    let result = (|| -> Result<crate::metadata_backup::RestoreReport> {
+        // O destino pode ser um diretório novo, portanto resolve_repository
+        // (que exige settings.json e index.db) não serve aqui.
+        let candidate = if let Some(repo) = repo {
+            PathBuf::from(repo)
+        } else if let Ok(env_repo) = std::env::var("REDBACKUP_REPO") {
+            if env_repo.trim().is_empty() {
+                std::env::current_dir()?
+            } else {
+                PathBuf::from(env_repo)
+            }
+        } else {
+            std::env::current_dir()?
+        };
+        let target = validate_path(
+            candidate
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Caminho do repositório não é UTF-8"))?,
+            false,
+        )?;
+        let key = match key_file.filter(|p| !p.trim().is_empty()) {
+            Some(path) => Some(key::load_key(&PathBuf::from(path))?),
+            None => {
+                if let Ok(settings) = Settings::load(&target) {
+                    load_key_for(&settings, None).ok()
+                } else {
+                    None
+                }
+            }
+        };
+        crate::metadata_backup::restore_backup(Path::new(from), &target, force, key.as_ref())
+    })();
+    match result {
+        Ok(report) => {
+            println!(
+                "Metadados restaurados: {} snapshot(s) coberto(s), {} completo(s).",
+                report.covered_snapshots, report.complete_snapshots
+            );
+            if let Some(path) = &report.preserved_existing {
+                println!("Banco anterior preservado em: {}", path.display());
+            }
+            if report.new_repository {
+                println!(
+                    "Repositório novo: copie os chunks para data/, reconfigure caminhos com `init` (chave original) e verifique com `recover`/`scrub`."
+                );
+            }
+            if report.needs_init {
+                println!("Falta configuração: execute `init` com origem, destino e chave originais antes de operar o repositório.");
+            }
+            for problem in &report.incomplete_snapshots {
+                eprintln!(
+                    "SNAPSHOT INCOMPLETO [{}]: {}",
+                    problem.snapshot_id,
+                    problem.problems.join("; ")
+                );
+            }
+            if report.is_complete() {
+                0
+            } else {
+                eprintln!("Restauração parcial: dados recuperáveis foram preservados, mas nem todos os snapshots cobertos estão completos.");
+                4
+            }
+        }
+        Err(error) => {
+            eprintln!("ERRO: restauração de metadados falhou: {:#}", error);
+            error_code(&error)
         }
     }
 }
@@ -529,10 +756,15 @@ pub fn cmd_list_files(repo: Option<&str>, snapshot_id: i64) -> i32 {
 
 /// Comando `prune` — realiza pruning de snapshots expirados.
 pub fn cmd_prune(force: bool) -> i32 {
-    cmd_prune_full(None, force, None)
+    cmd_prune_full(None, force, None, false)
 }
 
-pub fn cmd_prune_full(repo: Option<&str>, force: bool, days: Option<u64>) -> i32 {
+pub fn cmd_prune_full(
+    repo: Option<&str>,
+    force: bool,
+    days: Option<u64>,
+    allow_protected: bool,
+) -> i32 {
     if !force {
         eprintln!("ERRO [1]: Comando destrutivo `prune` requer `--force`.");
         return 1;
@@ -552,7 +784,7 @@ pub fn cmd_prune_full(repo: Option<&str>, force: bool, days: Option<u64>) -> i32
         }
     };
     let retention_days = days.unwrap_or(settings.retention_days);
-    match retention::prune_repository(&root, retention_days) {
+    match retention::prune_repository_with_options(&root, retention_days, allow_protected) {
         Ok(report) => {
             println!(
                 "Pruning concluído: {} snapshot(s), {} chunk(s), {} byte(s) liberados.",
@@ -565,6 +797,25 @@ pub fn cmd_prune_full(repo: Option<&str>, force: bool, days: Option<u64>) -> i32
             }
             for error in &report.errors {
                 eprintln!("AVISO: {}", error);
+            }
+            for id in &report.protected_removed {
+                eprintln!(
+                    "AVISO: snapshot {} protegido pela cópia de metadados foi removido com --allow-protected; execute metadata-backup para atualizar a cobertura.",
+                    id
+                );
+            }
+            if !report.protected_skipped.is_empty() {
+                let ids: Vec<String> = report
+                    .protected_skipped
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect();
+                eprintln!(
+                    "AVISO: {} snapshot(s) expirado(s) protegido(s) pela cópia de metadados foram mantidos: {}. Atualize a cópia de metadados ou use --allow-protected para removê-los explicitamente.",
+                    report.protected_skipped.len(),
+                    ids.join(", ")
+                );
+                return 4;
             }
             if report.errors.is_empty() {
                 0
@@ -936,6 +1187,18 @@ pub fn cmd_status(repo: Option<&str>, watch: bool) -> i32 {
                 "Redundância (última sincronização): {}",
                 data["redundancy"]["state"].as_str().unwrap_or("disabled")
             );
+            println!(
+                "Cópia de metadados: {} ({} snapshot(s) coberto(s))",
+                data["metadata_backup"]["state"]
+                    .as_str()
+                    .unwrap_or("disabled"),
+                data["metadata_backup"]["covered_snapshots"]
+                    .as_u64()
+                    .unwrap_or(0)
+            );
+            if let Some(detail) = data["metadata_backup"]["detail"].as_str() {
+                println!("  detalhe: {}", detail);
+            }
             let active = data["backup_active"].as_bool().unwrap_or(false);
             println!(
                 "Backup: {}",

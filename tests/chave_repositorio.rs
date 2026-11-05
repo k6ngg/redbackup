@@ -23,6 +23,7 @@ fn configurar(source: &Path, repo: &Path) -> Settings {
         chunk_min_size: 64,
         chunk_max_size: 1024,
         retention_days: 30,
+        metadata_backup_path: None,
     }
 }
 

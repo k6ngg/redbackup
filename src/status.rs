@@ -194,8 +194,9 @@ pub fn repository_status(root: &Path) -> Result<serde_json::Value> {
             .as_ref()
             .is_some_and(|p| !matches!(p.stage.as_str(), "completed" | "unchanged" | "failed"));
     let redundancy = serde_json::to_value(crate::redundancy::observed_state(root)?)?;
+    let metadata_backup = serde_json::to_value(crate::metadata_backup::observed_state(root)?)?;
     Ok(
-        serde_json::json!({"repository":root,"source":settings.source_path,"snapshots":counts,"last_completed":last.map(|(id,timestamp)| serde_json::json!({"id":id,"timestamp":timestamp})),"chunks":chunks,"corruption_recorded":corrupted,"backup_active":active,"backup_interrupted":interrupted,"backup":progress,"redundancy":redundancy}),
+        serde_json::json!({"repository":root,"source":settings.source_path,"snapshots":counts,"last_completed":last.map(|(id,timestamp)| serde_json::json!({"id":id,"timestamp":timestamp})),"chunks":chunks,"corruption_recorded":corrupted,"backup_active":active,"backup_interrupted":interrupted,"backup":progress,"redundancy":redundancy,"metadata_backup":metadata_backup}),
     )
 }
 

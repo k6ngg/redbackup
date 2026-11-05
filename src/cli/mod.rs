@@ -71,6 +71,7 @@ pub fn run(args: Vec<String>) -> i32 {
             retention_days,
             min_chunk,
             max_chunk,
+            metadata_backup,
         } => {
             if let Err(error) = validate_chunk_options(min_chunk, max_chunk) {
                 eprintln!("ERRO [1]: {error}");
@@ -83,6 +84,7 @@ pub fn run(args: Vec<String>) -> i32 {
                 retention_days,
                 min_chunk,
                 max_chunk,
+                metadata_backup.as_deref(),
             )
         }
         Command::Keygen { path } => cmd_keygen(&path),
@@ -119,7 +121,8 @@ pub fn run(args: Vec<String>) -> i32 {
             repository,
             days,
             force,
-        } => cmd_prune_full(repository.repo.as_deref(), force, days),
+            allow_protected,
+        } => cmd_prune_full(repository.repo.as_deref(), force, days, allow_protected),
         Command::Scrub { repository, sample } => cmd_scrub(
             repository.repository.repo.as_deref(),
             repository.key_file.as_deref(),
@@ -144,6 +147,25 @@ pub fn run(args: Vec<String>) -> i32 {
         Command::RedundancySync(repository) => cmd_redundancy_sync(
             repository.repository.repo.as_deref(),
             repository.key_file.as_deref(),
+        ),
+        Command::MetadataBackupConfigure { repository, dest } => {
+            cmd_metadata_backup_configure(repository.repo.as_deref(), &dest)
+        }
+        Command::MetadataBackup { repository, dest } => {
+            cmd_metadata_backup(repository.repo.as_deref(), dest.as_deref())
+        }
+        Command::MetadataVerify { from, repository } => {
+            cmd_metadata_verify(&from, repository.repo.as_deref())
+        }
+        Command::MetadataRestore {
+            from,
+            repository,
+            force,
+        } => cmd_metadata_restore(
+            &from,
+            repository.repository.repo.as_deref(),
+            repository.key_file.as_deref(),
+            force,
         ),
         Command::Daemon(repository) => cmd_daemon(
             repository.repository.repo.as_deref(),
