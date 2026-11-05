@@ -206,6 +206,23 @@ Sob bloqueio exclusivo, verifica referências, tamanhos e ordem dos chunks dos s
 
 A chave original é obrigatória: usa-se o arquivo configurado ou `--key-file`. Uma chave diferente da vinculada é recusada antes de qualquer alteração. Repositórios antigos sem verificador de chave e com chunks referenciados por snapshots concluídos são recusados, pois não é possível distinguir com segurança uma chave incorreta de dados corrompidos; nesse caso, preserve os dados e valide a chave antes de vincular o repositório. A recuperação não repara chunks corrompidos. No Windows, a durabilidade do rename após queda de energia não é garantida pela implementação atual.
 
+#### Redundância de chunks
+
+A redundância é opcional e desativada por padrão. Prepare um diretório existente e vazio, preferencialmente em outro disco, e configure-o:
+
+```bash
+redbackup redundancy-configure --repo <repositório> --dest <diretório-vazio> --mode best-effort
+redbackup redundancy-sync --repo <repositório> [--key-file <chave>]
+```
+
+O primeiro comando associa o destino exclusivamente ao repositório; o segundo valida e copia os chunks dos snapshots já concluídos. Os backups seguintes também sincronizam automaticamente antes da finalização. `--mode best-effort` é o padrão: uma falha da cópia deixa a redundância `degraded`, mas não impede um snapshot principal íntegro de ser concluído. Com `--mode required`, o snapshot é marcado como falho se a sincronização não puder ser concluída. Corrija o problema e execute `redundancy-sync` ou tente o backup novamente.
+
+O `status` apresenta `disabled`, `pending`, `protected`, `degraded` ou `unavailable`. `protected` significa que a **última sincronização** verificou as cópias dos chunks dos snapshots concluídos; não garante que o destino permaneceu íntegro desde então. Execute `redundancy-sync` novamente para verificar. O destino usa um identificador próprio, recusando o uso acidental de outro diretório. Diretórios sobrepostos à origem ou ao repositório, bem como destinos inicialmente não vazios, são recusados. Em Unix há um aviso quando ambos aparentam estar no mesmo dispositivo; isso não detecta todos os domínios de falha compartilhados.
+
+As cópias são arquivos cifrados com a mesma chave e são autenticadas, descomprimidas e verificadas por tamanho e BLAKE3. Uma cópia já existente mas inválida não é sobrescrita; ela é preservada para diagnóstico e a sincronização falha. Nenhum `prune` remove cópias redundantes nesta versão, portanto o espaço ocupado pode crescer. A configuração não pode ser substituída automaticamente. Uma interrupção durante a configuração inicial pode deixar o marcador de identificação no destino antes da configuração ser salva; nesse caso, examine o diretório antes de qualquer limpeza manual.
+
+**Limites:** a redundância guarda chunks, não uma cópia independente de `metadata/index.db` ou da configuração. Guarde separadamente um backup consistente dos metadados e da chave. Esta versão ainda não repara o repositório principal usando a redundância e não recria dados que não estejam disponíveis. No Windows, a durabilidade do rename após queda de energia não é garantida. A sincronização percorre e verifica todos os chunks referenciados pelos snapshots concluídos, podendo ser demorada.
+
 #### `daemon`
 
 ```bash

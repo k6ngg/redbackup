@@ -258,6 +258,15 @@ pub fn cmd_backup(repo: Option<&str>, key_file: Option<&str>, use_daemon: bool) 
                                 return 4;
                             }
                         }
+                        if let Some(redundancy) = data.get("redundancy").filter(|v| !v.is_null()) {
+                            println!(
+                                "Redundância: {}",
+                                redundancy["state"].as_str().unwrap_or("desconhecida")
+                            );
+                            if let Some(detail) = redundancy["detail"].as_str() {
+                                eprintln!("AVISO: redundância: {}", detail);
+                            }
+                        }
                     }
                     return if response.is_ok() { 0 } else { 4 };
                 }
@@ -310,6 +319,12 @@ pub fn cmd_backup(repo: Option<&str>, key_file: Option<&str>, use_daemon: bool) 
             for error in &report.errors {
                 eprintln!("ARQUIVO FALHOU [{}]: {}", error.path, error.message);
             }
+            if let Some(redundancy) = &report.redundancy {
+                println!("Redundância: {}", redundancy.state);
+                if let Some(detail) = &redundancy.detail {
+                    eprintln!("AVISO: redundância: {}", detail);
+                }
+            }
             if matches!(report.status.as_str(), "completed" | "unchanged") {
                 0
             } else {
@@ -319,6 +334,52 @@ pub fn cmd_backup(repo: Option<&str>, key_file: Option<&str>, use_daemon: bool) 
         Err(error) => {
             eprintln!("ERRO [{}]: Backup falhou: {}", error_code(&error), error);
             error_code(&error)
+        }
+    }
+}
+
+pub fn cmd_redundancy_configure(repo: Option<&str>, dest: &str, mode: Option<&str>) -> i32 {
+    let result = (|| -> Result<()> {
+        let root = resolve_repository(repo)?;
+        let settings = Settings::load(&root)?;
+        let mode = match mode.unwrap_or("best-effort") {
+            "best-effort" => crate::redundancy::Mode::BestEffort,
+            "required" => crate::redundancy::Mode::Required,
+            _ => anyhow::bail!("Modo deve ser best-effort ou required"),
+        };
+        crate::redundancy::configure(&root, &settings, Path::new(dest), mode)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            println!("Redundância configurada; execute redundancy-sync para copiar snapshots existentes.");
+            0
+        }
+        Err(error) => {
+            eprintln!("ERRO: falha ao configurar redundância: {:#}", error);
+            1
+        }
+    }
+}
+
+pub fn cmd_redundancy_sync(repo: Option<&str>, key_file: Option<&str>) -> i32 {
+    let result = (|| -> Result<usize> {
+        let root = resolve_repository(repo)?;
+        let settings = Settings::load(&root)?;
+        let key = load_key_for(&settings, key_file)?;
+        crate::redundancy::sync_repository(&root, &key)
+    })();
+    match result {
+        Ok(count) => {
+            println!("Redundância verificada: {} chunk(s).", count);
+            0
+        }
+        Err(error) => {
+            eprintln!(
+                "ERRO: redundância degradada ou sincronização não iniciada: {:#}",
+                error
+            );
+            4
         }
     }
 }
@@ -854,6 +915,10 @@ pub fn cmd_status(repo: Option<&str>, watch: bool) -> i32 {
             println!(
                 "Chunks: {}; corrupção registrada: {} (use scrub para verificar)",
                 data["chunks"], data["corruption_recorded"]
+            );
+            println!(
+                "Redundância (última sincronização): {}",
+                data["redundancy"]["state"].as_str().unwrap_or("disabled")
             );
             let active = data["backup_active"].as_bool().unwrap_or(false);
             println!(

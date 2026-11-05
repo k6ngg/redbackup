@@ -223,6 +223,7 @@ fn handle_connection(
                     "chunks_new": report.chunks_new,
                     "chunks_reused": report.chunks_reused,
                     "errors": report.errors,
+                    "redundancy": report.redundancy,
                 });
                 (
                     Response {

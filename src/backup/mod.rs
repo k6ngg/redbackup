@@ -50,6 +50,8 @@ pub struct BackupReport {
     pub chunks_reused: usize,
     pub errors: Vec<FileError>,
     pub status: String,
+    #[serde(default)]
+    pub redundancy: Option<crate::redundancy::State>,
 }
 
 struct WalkResult {
@@ -109,6 +111,13 @@ pub fn run_backup(repo_root: &Path, settings: &Settings, key: &[u8; 32]) -> Resu
         // uma chave diferente é recusada sem alterar o repositório.
         key_binding::bind_repository_key(&conn, &root, key)?;
 
+        let redundancy = crate::redundancy::load(&root)?;
+        if redundancy.is_some() {
+            // O estado pendente é durável antes da criação/finalização de um
+            // snapshot que ainda não possui cópia redundante.
+            crate::redundancy::set_state(&root, "pending", None)?;
+        }
+
         let snapshot_id = create_snapshot(&conn, &source.to_string_lossy())?;
         progress.value.report.snapshot_id = snapshot_id;
         let result = backup_files(
@@ -140,6 +149,41 @@ pub fn run_backup(repo_root: &Path, settings: &Settings, key: &[u8; 32]) -> Resu
                     .iter()
                     .filter(|e| e.path != "<snapshot>")
                     .count();
+                if report.errors.is_empty() {
+                    if let Some(config) = &redundancy {
+                        let result = crate::redundancy::sync_locked(
+                            &root,
+                            &conn,
+                            config,
+                            key,
+                            Some(snapshot_id),
+                        );
+                        match result {
+                            Ok(_) => {
+                                crate::redundancy::set_state(&root, "protected", None)?;
+                                report.redundancy = crate::redundancy::read_state(&root)?;
+                            }
+                            Err(error) => {
+                                let detail = format!("{:#}", error);
+                                crate::redundancy::set_state(
+                                    &root,
+                                    "degraded",
+                                    Some(detail.clone()),
+                                )?;
+                                report.redundancy = crate::redundancy::read_state(&root)?;
+                                if config.mode == crate::redundancy::Mode::Required {
+                                    report.errors.push(FileError {
+                                        path: "<snapshot>".into(),
+                                        message: format!(
+                                            "Redundância obrigatória falhou: {}",
+                                            detail
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
                 // Um evento do watcher pode não alterar o conteúdo. Nesse caso,
                 // descarta o snapshot em andamento em vez de publicar um registro
                 // idêntico ao último concluído.

@@ -9,6 +9,7 @@ pub mod daemon;
 pub mod metadata;
 pub mod pipeline;
 pub mod recovery;
+pub mod redundancy;
 pub mod repository;
 pub mod restoration;
 pub mod retention;
