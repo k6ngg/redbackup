@@ -177,10 +177,10 @@ pub fn run(args: Vec<String>) -> i32 {
         },
         "recover" => match parse_options(&args[2..]) {
             Ok(parsed) => {
-                if let Err(error) = parsed.only(&["repo"]) {
+                if let Err(error) = parsed.only(&["repo", "key-file"]) {
                     return usage_error(&error);
                 }
-                cmd_recover(parsed.value("repo"))
+                cmd_recover(parsed.value("repo"), parsed.value("key-file"))
             }
             Err(error) => usage_error(&error),
         },
@@ -246,7 +246,7 @@ fn print_help() {
     println!("  redbackup list-files --snapshot <id> [--repo <repositório>]");
     println!("  redbackup prune --force [--days N] [--repo <repositório>]");
     println!("  redbackup scrub [--repo <repositório>] [--key-file <chave>] [--sample N]");
-    println!("  redbackup recover [--repo <repositório>]");
+    println!("  redbackup recover [--repo <repositório>] [--key-file <chave>]");
     println!("  redbackup daemon [--repo <repositório>] [--key-file <chave>]");
     println!("  redbackup watch [--repo <repositório>] [--key-file <chave>] [--debounce N]");
     println!();

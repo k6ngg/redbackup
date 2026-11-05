@@ -562,6 +562,20 @@ pub fn verify_snapshot_integrity(
     )?;
     let rows = stmt.query_map(params![snapshot_id], |row| row.get::<_, String>(0))?;
     let mut problems = Vec::new();
+    let invalid_files: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM files f WHERE f.snapshot_id = ?1 AND (
+            f.size < 0 OR f.size != COALESCE((SELECT SUM(c.size) FROM file_chunks fc
+                JOIN chunks c ON c.hash_id = fc.chunk_hash WHERE fc.file_id = f.id), 0)
+            OR EXISTS (SELECT 1 FROM file_chunks fc WHERE fc.file_id = f.id AND
+                (fc.order_index < 0 OR fc.order_index >= (SELECT COUNT(*) FROM file_chunks x WHERE x.file_id = f.id)))
+        )", [snapshot_id], |row| row.get(0),
+    )?;
+    if invalid_files > 0 {
+        problems.push(format!(
+            "{} arquivo(s) com tamanho ou ordem de chunks inválidos",
+            invalid_files
+        ));
+    }
     for row in rows {
         let hash = row?;
         match get_chunk(conn, &hash)? {

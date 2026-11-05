@@ -24,6 +24,15 @@ pub fn validate_stored_chunk(
     key: &[u8; 32],
     expected_hash: &str,
 ) -> Result<bool> {
+    Ok(validated_chunk_size(chunk_path, key, expected_hash)?.is_some())
+}
+
+/// Autentica o chunk e retorna seu tamanho descomprimido quando o hash confere.
+pub fn validated_chunk_size(
+    chunk_path: &Path,
+    key: &[u8; 32],
+    expected_hash: &str,
+) -> Result<Option<u64>> {
     let encrypted_data = fs::read(chunk_path).with_context(|| {
         format!(
             "Falha ao ler chunk armazenado para validação: {}",
@@ -43,5 +52,5 @@ pub fn validate_stored_chunk(
         )
     })?;
     let recalculated = hash::hash_bytes(&decompressed);
-    Ok(recalculated == expected_hash)
+    Ok((recalculated == expected_hash).then_some(decompressed.len() as u64))
 }

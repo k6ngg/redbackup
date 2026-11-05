@@ -49,9 +49,31 @@ fn atomic_write_with_sync(
     let _ = mode;
 
     let mut temp = builder.tempfile_in(parent)?;
+    #[cfg(test)]
+    let is_chunk = final_path
+        .ancestors()
+        .any(|path| path.file_name().is_some_and(|name| name == "data"));
+    #[cfg(test)]
+    {
+        let midpoint = data.len() / 2;
+        temp.write_all(&data[..midpoint])?;
+        if is_chunk {
+            crate::crash_point("chunk_write");
+        }
+        temp.write_all(&data[midpoint..])?;
+    }
+    #[cfg(not(test))]
     temp.write_all(data)?;
     temp.as_file().sync_all()?;
+    #[cfg(test)]
+    if is_chunk {
+        crate::crash_point("before_rename");
+    }
     temp.persist(final_path).map_err(|error| error.error)?;
+    #[cfg(test)]
+    if is_chunk {
+        crate::crash_point("after_rename");
+    }
 
     // Após persist, falhar não desfaz o rename: o arquivo pode existir, mas
     // sua durabilidade permanece desconhecida até uma sincronização bem-sucedida.

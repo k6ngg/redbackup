@@ -15,3 +15,11 @@ pub mod retention;
 pub mod scrubbing;
 
 pub mod status;
+
+// Presente somente no executável de testes, nunca na biblioteca distribuída.
+#[cfg(test)]
+pub(crate) fn crash_point(point: &str) {
+    if std::env::var("REDBACKUP_TEST_CRASH_POINT").as_deref() == Ok(point) {
+        std::process::exit(86);
+    }
+}

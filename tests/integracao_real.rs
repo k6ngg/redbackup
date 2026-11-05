@@ -67,6 +67,179 @@ fn arquivos_de_chunks(repo: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
+fn recuperacao_de_estagios_interrompidos_preserva_snapshot_valido() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("origem");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&source).unwrap();
+    let content = b"conteudo seguro".repeat(100);
+    escrever(&source, "arquivo", &content);
+    let report = backup::run_backup(&repo, &configurar(&source, &repo), &CHAVE).unwrap();
+    assert_eq!(report.status, "completed");
+    let conn = conectar(&repo);
+    let hash = list_chunk_hashes(&conn).unwrap()[0].clone();
+    let physical = chunk_path(&repo, &hash).unwrap();
+    let pending = create_snapshot(&conn, "interrompido").unwrap();
+    // Uma transação interrompida durante o registro das referências é revertida
+    // ao fechar a conexão, como na recuperação do journal pelo SQLite.
+    conn.execute_batch("BEGIN IMMEDIATE; UPDATE chunks SET reference_count = 0;")
+        .unwrap();
+    drop(conn);
+    let orphan_hash = "a".repeat(64);
+    let orphan = chunk_path(&repo, &orphan_hash).unwrap();
+    fs::create_dir_all(orphan.parent().unwrap()).unwrap();
+    fs::write(&orphan, b"publicado antes do registro").unwrap();
+    let partial = orphan.parent().unwrap().join(".tmp_escrita_interrompida");
+    fs::write(&partial, b"escrita parcial").unwrap();
+    for iteration in 0..2 {
+        let result = recovery::recover_repository(&repo, &CHAVE).unwrap();
+        assert_eq!(result.stale_snapshots_failed, usize::from(iteration == 0));
+        assert!(physical.is_file());
+        assert!(!orphan.exists());
+        assert!(!partial.exists());
+        let conn = conectar(&repo);
+        let status: String = conn
+            .query_row("SELECT status FROM snapshots WHERE id=?1", [pending], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "failed");
+        let count: (i64, i64) = conn.query_row("SELECT reference_count, (SELECT COUNT(*) FROM file_chunks WHERE chunk_hash=?1) FROM chunks WHERE hash_id=?1", [&hash], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(count.0, count.1);
+        let output = temp.path().join(format!("restaurado-{iteration}"));
+        restore_from_snapshot(
+            &repo,
+            &conn,
+            report.snapshot_id,
+            "arquivo",
+            &output,
+            &CHAVE,
+            false,
+        )
+        .unwrap();
+        assert_eq!(fs::read(output).unwrap(), content);
+    }
+}
+
+#[test]
+fn recuperacao_nao_mantem_snapshot_concluido_com_chunk_ausente() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("origem");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&source).unwrap();
+    escrever(&source, "arquivo", b"dados");
+    let report = backup::run_backup(&repo, &configurar(&source, &repo), &CHAVE).unwrap();
+    let conn = conectar(&repo);
+    let hash = list_chunk_hashes(&conn).unwrap()[0].clone();
+    drop(conn);
+    fs::remove_file(chunk_path(&repo, &hash).unwrap()).unwrap();
+    assert_eq!(
+        recovery::recover_repository(&repo, &CHAVE)
+            .unwrap()
+            .stale_snapshots_failed,
+        1
+    );
+    assert_eq!(
+        recovery::recover_repository(&repo, &CHAVE)
+            .unwrap()
+            .stale_snapshots_failed,
+        0
+    );
+    let conn = conectar(&repo);
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM snapshots WHERE id=?1",
+            [report.snapshot_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "failed");
+}
+
+#[test]
+fn recuperacao_autentica_chunks_e_recusa_chave_errada_sem_alteracoes() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("origem");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&source).unwrap();
+    escrever(&source, "arquivo", b"dados autenticados");
+    let report = backup::run_backup(&repo, &configurar(&source, &repo), &CHAVE).unwrap();
+    let conn = conectar(&repo);
+    let hash = list_chunk_hashes(&conn).unwrap()[0].clone();
+    let pending = create_snapshot(&conn, "interrompido").unwrap();
+    drop(conn);
+    let path = chunk_path(&repo, &hash).unwrap();
+    let mut bytes = fs::read(&path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    fs::write(&path, &bytes).unwrap();
+    assert!(recovery::recover_repository(&repo, &[99; 32]).is_err());
+    let conn = conectar(&repo);
+    let statuses: Vec<String> = conn
+        .prepare("SELECT status FROM snapshots ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(statuses, ["completed", "in-progress"]);
+    drop(conn);
+    assert_eq!(
+        recovery::recover_repository(&repo, &CHAVE)
+            .unwrap()
+            .stale_snapshots_failed,
+        2
+    );
+    assert_eq!(
+        recovery::recover_repository(&repo, &CHAVE)
+            .unwrap()
+            .stale_snapshots_failed,
+        0
+    );
+    let conn = conectar(&repo);
+    for id in [report.snapshot_id, pending] {
+        let status: String = conn
+            .query_row("SELECT status FROM snapshots WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "failed");
+    }
+    let marked: bool = conn
+        .query_row(
+            "SELECT corrupted_at IS NOT NULL FROM chunks WHERE hash_id=?1",
+            [&hash],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(marked);
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn recuperacao_recusa_repositorio_antigo_sem_vinculacao() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("origem");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&source).unwrap();
+    escrever(&source, "arquivo", b"dados antigos");
+    let report = backup::run_backup(&repo, &configurar(&source, &repo), &CHAVE).unwrap();
+    let conn = conectar(&repo);
+    conn.execute("DELETE FROM repository_key", []).unwrap();
+    drop(conn);
+    assert!(recovery::recover_repository(&repo, &CHAVE).is_err());
+    let conn = conectar(&repo);
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM snapshots WHERE id=?1",
+            [report.snapshot_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "completed");
+}
+
+#[test]
 fn bloqueio_impede_escritores_concorrentes() {
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path().join("repo");
@@ -561,7 +734,7 @@ fn pruning_adia_chunks_quando_ha_snapshot_em_andamento() {
 
     // Recover encerra o snapshot em andamento e já remove os chunks órfãos
     // (o banco não tem mais operação em andamento).
-    let recovery = recovery::recover_repository(&repo).unwrap();
+    let recovery = recovery::recover_repository(&repo, &CHAVE).unwrap();
     assert!(recovery.stale_snapshots_failed >= 1);
     assert!(
         !recovery.removed.is_empty(),
@@ -698,7 +871,7 @@ fn recuperacao_marca_snapshot_interrompido_e_remove_temporarios() {
     fs::create_dir_all(tmp.parent().unwrap()).unwrap();
     fs::write(&tmp, b"parcial").unwrap();
 
-    let recovery = recovery::recover_repository(&repo).unwrap();
+    let recovery = recovery::recover_repository(&repo, &CHAVE).unwrap();
     assert!(recovery.stale_snapshots_failed >= 1);
     assert!(
         recovery

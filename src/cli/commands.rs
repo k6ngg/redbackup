@@ -565,7 +565,7 @@ pub fn cmd_scrub(repo: Option<&str>, key_file: Option<&str>, sample: Option<usiz
 }
 
 /// Comando `recover` — limpa resíduos e snapshots interrompidos.
-pub fn cmd_recover(repo: Option<&str>) -> i32 {
+pub fn cmd_recover(repo: Option<&str>, key_file: Option<&str>) -> i32 {
     let root = match resolve_repository(repo) {
         Ok(root) => root,
         Err(error) => {
@@ -573,7 +573,21 @@ pub fn cmd_recover(repo: Option<&str>) -> i32 {
             return 1;
         }
     };
-    match recovery::recover_repository(&root) {
+    let settings = match Settings::load(&root) {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("ERRO [1]: {}", error);
+            return 1;
+        }
+    };
+    let key = match load_key_for(&settings, key_file) {
+        Ok(key) => key,
+        Err(error) => {
+            eprintln!("ERRO [1]: {}", error);
+            return 1;
+        }
+    };
+    match recovery::recover_repository(&root, &key) {
         Ok(report) => {
             println!(
                 "Recuperação concluída: {} arquivo(s) removido(s), {} snapshot(s) marcado(s) como falho(s).",

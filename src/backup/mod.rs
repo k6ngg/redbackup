@@ -158,7 +158,16 @@ pub fn run_backup(repo_root: &Path, settings: &Settings, key: &[u8; 32]) -> Resu
                 } else {
                     "failed"
                 };
-                finish_snapshot(&conn, snapshot_id, status)?;
+                #[cfg(test)]
+                crate::crash_point("before_finalize");
+                let tx = conn.transaction()?;
+                finish_snapshot(&tx, snapshot_id, status)?;
+                #[cfg(test)]
+                crate::crash_point("during_finalize");
+                tx.commit()
+                    .context("Falha ao confirmar finalização do snapshot")?;
+                #[cfg(test)]
+                crate::crash_point("after_finalize");
                 report.status = status.to_string();
                 report.snapshot_id = snapshot_id;
 
@@ -271,6 +280,8 @@ fn register_file(
     // `reference_count`, inclusive quando o mesmo chunk aparece repetidamente.
     for (hash_id, size, compressed_size) in &processed.chunks {
         upsert_chunk(&tx, hash_id, *size, *compressed_size)?;
+        #[cfg(test)]
+        crate::crash_point("during_references");
     }
 
     let file_id = insert_file(
@@ -555,4 +566,121 @@ fn walk_dir(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod crash_tests {
+    use super::*;
+    use crate::recovery::recover_repository;
+    use crate::restoration::rebuild::restore_from_snapshot;
+    use std::process::Command;
+
+    const KEY: [u8; 32] = [42; 32];
+
+    fn settings(source: &Path, repo: &Path) -> Settings {
+        Settings {
+            source_path: source.display().to_string(),
+            destination_path: repo.display().to_string(),
+            chunk_min_size: 64,
+            chunk_max_size: 1024,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn crash_child() {
+        let Ok(root) = std::env::var("REDBACKUP_TEST_CRASH_ROOT") else {
+            return;
+        };
+        let root = Path::new(&root);
+        let source = root.join("source");
+        let repo = root.join("repo");
+        run_backup(&repo, &settings(&source, &repo), &KEY).unwrap();
+        panic!("o ponto de interrupção não foi alcançado");
+    }
+
+    #[test]
+    fn interrupcoes_reais_sao_recuperadas_sem_perder_backups() {
+        for point in [
+            "chunk_write",
+            "before_rename",
+            "after_rename",
+            "during_references",
+            "before_finalize",
+            "during_finalize",
+            "after_finalize",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            let source = root.join("source");
+            let repo = root.join("repo");
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("original"), b"backup anterior confiavel").unwrap();
+            let first = run_backup(&repo, &settings(&source, &repo), &KEY).unwrap();
+            assert_eq!(first.status, "completed");
+            fs::write(source.join("novo"), b"novo conteudo unico para interrupcao").unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "backup::crash_tests::crash_child", "--nocapture"])
+                .env("REDBACKUP_TEST_CRASH_ROOT", root)
+                .env("REDBACKUP_TEST_CRASH_POINT", point)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(86),
+                "ponto {point}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            for _ in 0..2 {
+                recover_repository(&repo, &KEY).unwrap();
+                let conn = connect_or_create(index_db_path(&repo).to_str().unwrap()).unwrap();
+                let statuses: Vec<String> = conn
+                    .prepare("SELECT status FROM snapshots ORDER BY id")
+                    .unwrap()
+                    .query_map([], |row| row.get(0))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect();
+                assert_eq!(
+                    statuses,
+                    if point == "after_finalize" {
+                        vec!["completed", "completed"]
+                    } else {
+                        vec!["completed", "failed"]
+                    },
+                    "{point}"
+                );
+                let inconsistent: i64 = conn.query_row("SELECT COUNT(*) FROM chunks c WHERE c.reference_count != (SELECT COUNT(*) FROM file_chunks WHERE chunk_hash=c.hash_id)", [], |row| row.get(0)).unwrap();
+                assert_eq!(inconsistent, 0, "{point}");
+                let dest = root.join("restore");
+                restore_from_snapshot(
+                    &repo,
+                    &conn,
+                    first.snapshot_id,
+                    "original",
+                    &dest,
+                    &KEY,
+                    true,
+                )
+                .unwrap();
+                assert_eq!(fs::read(&dest).unwrap(), b"backup anterior confiavel");
+                if point == "after_finalize" {
+                    restore_from_snapshot(
+                        &repo,
+                        &conn,
+                        first.snapshot_id + 1,
+                        "novo",
+                        &dest,
+                        &KEY,
+                        true,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        fs::read(&dest).unwrap(),
+                        b"novo conteudo unico para interrupcao"
+                    );
+                }
+            }
+        }
+    }
 }

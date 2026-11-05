@@ -199,10 +199,12 @@ Lê cada chunk (ou uma amostra aleatória de `N`), descriptografa, descomprime e
 #### `recover`
 
 ```bash
-redbackup recover [--repo <repositório>]
+redbackup recover [--repo <repositório>] [--key-file <chave>]
 ```
 
-Remove arquivos temporários `.tmp_*`, marca snapshots deixados em `in-progress` como `failed` e remove chunks físicos sem referência quando não há backup em andamento. Executar quando nenhum backup estiver ativo. É seguro repetir a operação.
+Sob bloqueio exclusivo, verifica referências, tamanhos e ordem dos chunks dos snapshots concluídos, autentica e descomprime cada chunk referenciado e confere seu BLAKE3 e tamanho. Marca como `failed` os snapshots interrompidos ou inconsistentes e recalcula as contagens de referências em uma transação SQLite. Depois remove temporários `.tmp_*` e chunks físicos sem referências. Os registros e dados de snapshots falhos são preservados para diagnóstico. É seguro repetir a operação; um banco ausente impede a recuperação.
+
+A chave original é obrigatória: usa-se o arquivo configurado ou `--key-file`. Uma chave diferente da vinculada é recusada antes de qualquer alteração. Repositórios antigos sem verificador de chave e com chunks referenciados por snapshots concluídos são recusados, pois não é possível distinguir com segurança uma chave incorreta de dados corrompidos; nesse caso, preserve os dados e valide a chave antes de vincular o repositório. A recuperação não repara chunks corrompidos. No Windows, a durabilidade do rename após queda de energia não é garantida pela implementação atual.
 
 #### `daemon`
 
