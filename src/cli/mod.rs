@@ -193,7 +193,11 @@ pub fn run(args: Vec<String>) -> i32 {
                     Ok(value) => value,
                     Err(error) => return usage_error(&error),
                 };
-                cmd_redundancy_configure(parsed.value("repo"), dest, parsed.value("mode"))
+                let mode = match parsed.required("mode") {
+                    Ok(value) => value,
+                    Err(error) => return usage_error(&error),
+                };
+                cmd_redundancy_configure(parsed.value("repo"), dest, Some(mode))
             }
             Err(error) => usage_error(&error),
         },
@@ -269,7 +273,10 @@ fn print_help() {
     println!("  redbackup prune --force [--days N] [--repo <repositório>]");
     println!("  redbackup scrub [--repo <repositório>] [--key-file <chave>] [--sample N]");
     println!("  redbackup recover [--repo <repositório>] [--key-file <chave>]");
-    println!("  redbackup redundancy-configure --dest <diretório> [--repo <repositório>] [--mode best-effort|required]");
+    println!("  redbackup redundancy-configure --dest <diretório> --mode <best-effort|required> [--repo <repositório>]");
+    println!(
+        "      best-effort: permite concluir backup sem redundância; required: exige cópia válida"
+    );
     println!("  redbackup redundancy-sync [--repo <repositório>] [--key-file <chave>]");
     println!("  redbackup daemon [--repo <repositório>] [--key-file <chave>]");
     println!("  redbackup watch [--repo <repositório>] [--key-file <chave>] [--debounce N]");

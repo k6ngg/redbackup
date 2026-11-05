@@ -206,6 +206,61 @@ fn comandos_cli_configuram_e_sincronizam() {
 }
 
 #[test]
+fn configuracao_exige_modo_explicito_sem_criar_arquivos_em_falhas() {
+    use std::process::Command;
+    for mode in ["best-effort", "required"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, repo, dest, _) = setup(tmp.path());
+        let run = |extra: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_redbackup"))
+                .env("HOME", tmp.path())
+                .env("XDG_CONFIG_HOME", tmp.path().join("config"))
+                .args([
+                    "redundancy-configure",
+                    "--repo",
+                    repo.to_str().unwrap(),
+                    "--dest",
+                    dest.to_str().unwrap(),
+                ])
+                .args(extra)
+                .output()
+                .unwrap()
+        };
+        let missing = run(&[]);
+        assert!(!missing.status.success());
+        assert!(String::from_utf8_lossy(&missing.stderr).contains("--mode"));
+        assert!(!run(&["--mode", "invalid"]).status.success());
+        assert!(!run(&["--mode", ""]).status.success());
+        assert_eq!(
+            redbackup::cli::commands::cmd_redundancy_configure(
+                Some(repo.to_str().unwrap()),
+                dest.to_str().unwrap(),
+                None
+            ),
+            1
+        );
+        assert!(fs::read_dir(&dest).unwrap().next().is_none());
+        assert!(!repo.join("config/redundancy.json").exists());
+        assert!(!repo.join("metadata/redundancy-state.json").exists());
+        let result = run(&["--mode", mode]);
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let config = redundancy::load(&repo).unwrap().unwrap();
+        assert_eq!(
+            config.mode,
+            if mode == "required" {
+                Mode::Required
+            } else {
+                Mode::BestEffort
+            }
+        );
+    }
+}
+
+#[test]
 fn recover_repara_chunk_corrompido_ou_ausente_e_preserva_original() {
     for missing in [false, true] {
         let tmp = tempfile::tempdir().unwrap();

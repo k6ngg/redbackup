@@ -340,13 +340,13 @@ pub fn cmd_backup(repo: Option<&str>, key_file: Option<&str>, use_daemon: bool) 
 
 pub fn cmd_redundancy_configure(repo: Option<&str>, dest: &str, mode: Option<&str>) -> i32 {
     let result = (|| -> Result<()> {
+        let mode = match mode {
+            Some("best-effort") => crate::redundancy::Mode::BestEffort,
+            Some("required") => crate::redundancy::Mode::Required,
+            _ => anyhow::bail!("Escolha explicitamente --mode best-effort ou --mode required"),
+        };
         let root = resolve_repository(repo)?;
         let settings = Settings::load(&root)?;
-        let mode = match mode.unwrap_or("best-effort") {
-            "best-effort" => crate::redundancy::Mode::BestEffort,
-            "required" => crate::redundancy::Mode::Required,
-            _ => anyhow::bail!("Modo deve ser best-effort ou required"),
-        };
         crate::redundancy::configure(&root, &settings, Path::new(dest), mode)?;
         Ok(())
     })();
